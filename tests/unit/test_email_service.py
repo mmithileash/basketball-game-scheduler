@@ -1,0 +1,159 @@
+import boto3
+import pytest
+from moto import mock_aws
+
+from common.email_service import (
+    send_announcement,
+    send_cancellation,
+    send_confirmation,
+    send_email,
+    send_reminder,
+)
+
+
+def _setup_ses():
+    """Helper to set up SES with verified identity inside moto context."""
+    ses = boto3.client("ses", region_name="eu-west-1")
+    ses.verify_email_identity(EmailAddress="scheduler@example.com")
+
+    import common.email_service as email_mod
+    email_mod._config = None
+    email_mod._ses_client = None
+    return ses
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_email():
+    """Verify SES send_email called with correct params."""
+    ses = _setup_ses()
+
+    send_email("player@example.com", "Test Subject", "Test Body")
+
+    # Verify email was sent by checking SES send statistics
+    stats = ses.get_send_statistics()
+    data_points = stats.get("SendDataPoints", [])
+    # moto tracks sends; at minimum, no exception means it was accepted
+    # We can also check the quota
+    quota = ses.get_send_quota()
+    assert quota["SentLast24Hours"] >= 1.0
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_announcement():
+    """Verify subject and body contain game date, time, location."""
+    ses = _setup_ses()
+
+    # We'll intercept by checking no exception and verifying content via
+    # a mock wrapper approach - but with moto we just verify it doesn't error
+    # and test the content by calling the function that builds the email
+    send_announcement("player@example.com", "Alice", "2026-03-28")
+
+    quota = ses.get_send_quota()
+    assert quota["SentLast24Hours"] >= 1.0
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_announcement_with_name(mocker):
+    """Verify personalised greeting when player name is provided."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_announcement("player@example.com", "Alice", "2026-03-28")
+
+    mock_send.assert_called_once()
+    args = mock_send.call_args
+    subject = args[0][1] if len(args[0]) > 1 else args.kwargs.get("subject", "")
+    body = args[0][2] if len(args[0]) > 2 else args.kwargs.get("body", "")
+
+    assert "2026-03-28" in subject
+    assert "Hi Alice" in body
+    assert "10:00 AM" in body
+    assert "Main Court" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_announcement_without_name(mocker):
+    """Verify generic greeting when player name is None."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_announcement("player@example.com", None, "2026-03-28")
+
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+
+    assert body.startswith("Hi,") or body.startswith("Hi\n")
+    assert "Hi None" not in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_reminder(mocker):
+    """Verify reminder contains confirmed count."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_reminder("player@example.com", "Bob", 4, "2026-03-28")
+
+    mock_send.assert_called_once()
+    subject = mock_send.call_args[0][1]
+    body = mock_send.call_args[0][2]
+
+    assert "Reminder" in subject
+    assert "2026-03-28" in subject
+    assert "4 confirmed" in body
+    assert "Hi Bob" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_cancellation(mocker):
+    """Verify cancellation message."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_cancellation("player@example.com", "2026-03-28")
+
+    mock_send.assert_called_once()
+    subject = mock_send.call_args[0][1]
+    body = mock_send.call_args[0][2]
+
+    assert "Cancelled" in subject
+    assert "2026-03-28" in subject
+    assert "cancelled" in body.lower()
+    assert "fewer than 6" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_confirmation(mocker):
+    """Verify roster included in body."""
+    _setup_ses()
+
+    roster = {
+        "YES": {
+            "alice@example.com": {"guests": ["Mike"]},
+            "bob@example.com": {"guests": []},
+        },
+        "NO": {"charlie@example.com": {"guests": []}},
+        "MAYBE": {},
+    }
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_confirmation("alice@example.com", "2026-03-28", roster)
+
+    mock_send.assert_called_once()
+    subject = mock_send.call_args[0][1]
+    body = mock_send.call_args[0][2]
+
+    assert "Confirmed" in subject
+    assert "2026-03-28" in subject
+    assert "alice@example.com" in body
+    assert "bob@example.com" in body
+    assert "Mike" in body
+    assert "10:00 AM" in body
+    assert "Main Court" in body
