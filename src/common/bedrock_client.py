@@ -7,6 +7,7 @@ import boto3
 from common.config import load_config
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 _config = None
 _bedrock_client = None
