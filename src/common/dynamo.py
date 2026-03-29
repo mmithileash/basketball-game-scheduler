@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -234,42 +234,22 @@ def update_game_status(game_date: str, status: str) -> None:
     logger.info("Updated game %s status to %s", game_date, status)
 
 
+def _next_saturday(today: date) -> date:
+    """Return the date of the coming Saturday (or today if today is Saturday)."""
+    days_ahead = (5 - today.weekday()) % 7
+    return today + timedelta(days=days_ahead)
+
+
 def get_current_open_game() -> dict[str, Any] | None:
-    """Scan Games table for the most recent open game."""
-    config = _get_config()
-    table = _get_resource().Table(config.games_table)
-
-    response = table.scan(
-        FilterExpression="sk = :sk AND #status = :status",
-        ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={
-            ":sk": "gameStatus",
-            ":status": "OPEN",
-        },
-    )
-    items = response.get("Items", [])
-
-    # Handle pagination
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression="sk = :sk AND #status = :status",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":sk": "gameStatus",
-                ":status": "OPEN",
-            },
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
-
-    if not items:
-        logger.info("No open game found")
-        return None
-
-    # Return the most recent open game by gameDate
-    items.sort(key=lambda x: x["gameDate"], reverse=True)
-    logger.info("Current open game: %s", items[0]["gameDate"])
-    return items[0]
+    """Get the open game for the upcoming Saturday via a direct point read."""
+    saturday = _next_saturday(date.today())
+    game_date = saturday.isoformat()
+    item = get_game_status(game_date)
+    if item and item.get("status") == "OPEN":
+        logger.info(f"Current open game: {game_date}")
+        return item
+    logger.info(f"No open game found for upcoming Saturday {game_date}")
+    return None
 
 
 def get_pending_players(game_date: str) -> list[dict[str, Any]]:

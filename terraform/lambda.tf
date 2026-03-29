@@ -3,6 +3,7 @@ locals {
     announcement_sender = "announcement-sender"
     email_processor     = "email-processor"
     reminder_checker    = "reminder-checker"
+    game_finalizer      = "game-finalizer"
   }
 
   lambda_env_vars = {
@@ -155,6 +156,49 @@ resource "aws_lambda_function" "reminder_checker" {
 
   tags = {
     Name = "basketball-reminder-checker"
+  }
+}
+
+resource "null_resource" "build_game_finalizer" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/game_finalizer
+      mkdir -p ${path.module}/.build/game_finalizer
+      cp -r ${path.module}/../src/common ${path.module}/.build/game_finalizer/common
+      cp -r ${path.module}/../src/game_finalizer/* ${path.module}/.build/game_finalizer/
+    EOT
+  }
+}
+
+data "archive_file" "game_finalizer_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/game_finalizer"
+  output_path = "${path.module}/.build/game_finalizer.zip"
+
+  depends_on = [null_resource.build_game_finalizer]
+}
+
+resource "aws_lambda_function" "game_finalizer" {
+  function_name    = "basketball-game-finalizer"
+  description      = "Marks Saturday games as PLAYED at 13:00 UTC"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.game_finalizer_zip.output_path
+  source_code_hash = data.archive_file.game_finalizer_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_vars
+  }
+
+  tags = {
+    Name = "basketball-game-finalizer"
   }
 }
 

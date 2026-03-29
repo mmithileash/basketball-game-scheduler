@@ -54,6 +54,23 @@ resource "aws_iam_role" "scheduler_execution" {
   }
 }
 
+resource "aws_scheduler_schedule" "game_finalizer" {
+  name        = "basketball-game-finalizer"
+  description = "Triggers game-finalizer Lambda every Saturday at 13:00 UTC"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 13 ? * SAT *)"
+  schedule_expression_timezone = "UTC"
+
+  target {
+    arn      = aws_lambda_function.game_finalizer.arn
+    role_arn = aws_iam_role.scheduler_execution.arn
+  }
+}
+
 resource "aws_iam_role_policy" "scheduler_invoke_lambda" {
   name = "invoke-lambda-functions"
   role = aws_iam_role.scheduler_execution.id
@@ -67,6 +84,7 @@ resource "aws_iam_role_policy" "scheduler_invoke_lambda" {
         Resource = [
           aws_lambda_function.announcement_sender.arn,
           aws_lambda_function.reminder_checker.arn,
+          aws_lambda_function.game_finalizer.arn,
         ]
       }
     ]

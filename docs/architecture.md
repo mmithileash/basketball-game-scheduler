@@ -15,8 +15,8 @@ Natural language understanding is provided by AWS Bedrock (Claude Haiku 3) in eu
 
 | Component | Service | Purpose |
 |---|---|---|
-| **Scheduling** | EventBridge | Two cron rules: Monday 9AM (announcements) and Wed + Fri 9AM (reminder checks) |
-| **Compute** | Lambda (×3) | `announcement-sender`, `email-processor`, `reminder-checker` — each is a focused, single-purpose function |
+| **Scheduling** | EventBridge | Three cron rules: Monday 9AM (announcements), Wed + Fri 9AM (reminder checks), Saturday 1PM UTC (game finalisation) |
+| **Compute** | Lambda (×4) | `announcement-sender`, `email-processor`, `reminder-checker`, `game-finalizer` — each is a focused, single-purpose function |
 | **Email — Outbound** | SES | Sends announcements, reminders, and NLU-generated replies to players |
 | **Email — Inbound** | SES Receipt Rule Set | Catches player replies via MX record and stores them in S3 |
 | **Raw Email Store** | S3 | Stores the full raw email (headers + body) for each inbound player reply |
@@ -160,7 +160,25 @@ See you next week!
 
 ---
 
-## 5. Data Model
+## 5. Game Finalisation Flow
+
+### Step-by-step
+
+1. **EventBridge fires** at 1:00 PM UTC every Saturday (cron: `cron(0 13 ? * SAT *)`) — after the game finishes
+2. **Lambda `game-finalizer`** is invoked
+3. Lambda calls DynamoDB for today's `gameStatus` item via a direct point read
+4. **Decision logic:**
+
+| Game status | Action |
+|---|---|
+| `OPEN` | Update status to `PLAYED` |
+| `CANCELLED` | No-op — cancelled games are never marked as played |
+| `PLAYED` | No-op — already finalised |
+| Not found | No-op — no game scheduled this week |
+
+---
+
+## 6. Data Model
 
 ![Data Model](diagrams/05_data_model.png)
 
@@ -210,12 +228,12 @@ See you next week!
 
 ---
 
-## 6. AWS Services & Cost Summary
+## 7. AWS Services & Cost Summary
 
 | Service | Role | Monthly Cost |
 |---|---|---|
-| EventBridge | Cron triggers (Mon, Wed, Fri) | Free |
-| Lambda (×3) | Announcement, reminder, email processing | Free |
+| EventBridge | Cron triggers (Mon, Wed, Fri, Sat) | Free |
+| Lambda (×4) | Announcement, reminder, email processing, game finalisation | Free |
 | SES Outbound | Sends announcements, reminders, replies | Free (≤62K emails/month from Lambda) |
 | SES Inbound | Receives player reply emails | Free (≤1K emails/month) |
 | S3 | Stores raw inbound emails | Free |
@@ -229,7 +247,7 @@ See you next week!
 
 ---
 
-## 7. Prerequisites Before Building
+## 8. Prerequisites Before Building
 
 1. **Register a domain** via Route 53 (e.g. `bballsched.link`) — required for SES inbound MX records
 2. **Exit SES sandbox** — new AWS accounts are sandboxed; submit a support request to enable sending to unverified addresses
@@ -238,15 +256,15 @@ See you next week!
 
 ---
 
-## 8. Infrastructure as Code
+## 9. Infrastructure as Code
 
 All AWS resources will be provisioned via **Terraform**. The configuration will create:
 
-- 3 Lambda functions with IAM roles
+- 4 Lambda functions with IAM roles
 - 2 DynamoDB tables (Players + Games)
 - 1 S3 bucket with event notification
 - SES domain identity, receipt rule set, and receipt rule
-- 2 EventBridge rules (Monday + Wed/Fri)
+- 3 EventBridge rules (Monday + Wed/Fri + Saturday)
 - Route 53 hosted zone and MX record
 - Bedrock model access (manual console step — documented)
 

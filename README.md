@@ -9,6 +9,7 @@ An automated, email-based basketball game scheduler built on AWS serverless infr
 3. **The system understands** the intent via Claude (Bedrock) and updates the roster accordingly
 4. **Wed & Fri 9AM** — If fewer than 6 players have confirmed, reminders are sent. If still under 6 by Friday, the game is cancelled
 5. **Friday with 6+** — Confirmation emails go out with the final roster
+6. **Saturday 1PM UTC** — The game is marked as PLAYED in DynamoDB
 
 ## Architecture
 
@@ -18,8 +19,8 @@ Fully serverless on AWS (eu-west-1):
 
 | Service | Role |
 |---|---|
-| **EventBridge** | Cron schedules (Mon, Wed, Fri) |
-| **Lambda** (×3) | announcement-sender, email-processor, reminder-checker |
+| **EventBridge** | Cron schedules (Mon, Wed, Fri, Sat) |
+| **Lambda** (×4) | announcement-sender, email-processor, reminder-checker, game-finalizer |
 | **SES** | Send and receive emails |
 | **S3** | Store raw inbound emails |
 | **DynamoDB** (×2 tables) | Players + Games (including RSVPs) |
@@ -41,7 +42,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed flow diagrams, dat
 │   │   └── bedrock_client.py    # Bedrock NLU intent parsing
 │   ├── announcement_sender/     # Monday announcement Lambda
 │   ├── email_processor/         # Inbound email processing Lambda
-│   └── reminder_checker/        # Wed/Fri reminder & cancellation Lambda
+│   ├── reminder_checker/        # Wed/Fri reminder & cancellation Lambda
+│   └── game_finalizer/          # Saturday game finalisation Lambda
 ├── terraform/                   # Infrastructure as Code
 ├── tests/
 │   ├── unit/                    # Unit tests (moto mocks)
