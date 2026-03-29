@@ -7,15 +7,14 @@ import pytest
 from email_processor.handler import handler, _extract_email_body, _extract_sender_email
 
 
-def _make_ses_event(message_id="test-message-id"):
-    """Build a minimal SES inbound event."""
+def _make_s3_event(bucket="test-email-bucket", key="test-message-id"):
+    """Build a minimal S3 event matching what the handler expects."""
     return {
         "Records": [
             {
-                "ses": {
-                    "mail": {
-                        "messageId": message_id,
-                    }
+                "s3": {
+                    "bucket": {"name": bucket},
+                    "object": {"key": key},
                 }
             }
         ]
@@ -61,7 +60,7 @@ def test_handler_join(mocker):
     mock_update = mocker.patch("email_processor.handler.update_player_response")
     mock_send = mocker.patch("email_processor.handler.send_email")
 
-    result = handler(_make_ses_event(), None)
+    result = handler(_make_s3_event(), None)
 
     assert result["statusCode"] == 200
     assert result["body"]["intent"] == "JOIN"
@@ -101,7 +100,7 @@ def test_handler_decline(mocker):
     mock_update = mocker.patch("email_processor.handler.update_player_response")
     mock_send = mocker.patch("email_processor.handler.send_email")
 
-    result = handler(_make_ses_event(), None)
+    result = handler(_make_s3_event(), None)
 
     assert result["body"]["intent"] == "DECLINE"
     mock_update.assert_called_once_with(
@@ -139,7 +138,7 @@ def test_handler_query_roster(mocker):
     mock_update = mocker.patch("email_processor.handler.update_player_response")
     mock_send = mocker.patch("email_processor.handler.send_email")
 
-    result = handler(_make_ses_event(), None)
+    result = handler(_make_s3_event(), None)
 
     assert result["body"]["intent"] == "QUERY_ROSTER"
     mock_update.assert_not_called()
@@ -159,7 +158,7 @@ def test_handler_no_open_game(mocker):
     mock_update = mocker.patch("email_processor.handler.update_player_response")
     mock_send = mocker.patch("email_processor.handler.send_email")
 
-    result = handler(_make_ses_event(), None)
+    result = handler(_make_s3_event(), None)
 
     assert result["statusCode"] == 200
     assert result["body"] == "No open game"

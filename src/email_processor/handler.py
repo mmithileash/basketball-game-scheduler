@@ -66,15 +66,48 @@ def _find_player_status(sender_email: str, roster: dict[str, Any]) -> str | None
     return None
 
 
+def _format_intent_summary(intent: str, guest_names: list[str]) -> str:
+    """Return a human-readable summary of what the system understood."""
+    summaries = {
+        "JOIN": "We've marked you as playing.",
+        "DECLINE": "We've marked you as not playing.",
+        "MAYBE": "We've marked you as maybe.",
+        "BRING_GUESTS": f"We've marked you as playing with guest(s): {', '.join(guest_names)}.",
+        "UPDATE_GUESTS": f"We've updated your guest list to: {', '.join(guest_names)}.",
+        "QUERY_ROSTER": "You asked about the current roster.",
+        "QUERY_PLAYER": "You asked about a player's status.",
+    }
+    return summaries.get(intent, "We weren't sure what you meant.")
+
+
+def _format_roster_summary(roster: dict[str, Any]) -> str:
+    """Format current roster into a readable summary for reply emails."""
+    sections = []
+
+    for status, label in [("YES", "Playing"), ("NO", "Not Playing"), ("MAYBE", "Maybe")]:
+        players = roster.get(status, {})
+        if players:
+            lines = []
+            for player_email, data in players.items():
+                lines.append(f"  - {player_email}")
+                for guest in data.get("guests", []):
+                    lines.append(f"    + Guest: {guest}")
+            sections.append(f"{label} ({len(players)}):\n" + "\n".join(lines))
+
+    if not sections:
+        return "\n\n---\nNo responses yet."
+
+    return "\n\n---\nCurrent Responses:\n\n" + "\n\n".join(sections)
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler: process inbound player email."""
     config = load_config()
 
-    # Extract S3 bucket and key from SES event
-    ses_record = event["Records"][0]["ses"]
-    message_id = ses_record["mail"]["messageId"]
-    bucket = config.email_bucket
-    key = message_id
+    # Extract S3 bucket and key from S3 event
+    s3_record = event["Records"][0]["s3"]
+    bucket = s3_record["bucket"]["name"]
+    key = s3_record["object"]["key"]
 
     logger.info("Processing email from S3: %s/%s", bucket, key)
 
@@ -145,8 +178,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     else:
         logger.warning("Unknown intent: %s", intent)
 
-    # Send reply
-    send_email(sender_email, "Re: " + subject, reply_draft)
+    # Build full reply with intent summary and roster
+    intent_summary = _format_intent_summary(intent, guest_names)
+    updated_roster = get_roster(game_date)
+    roster_summary = _format_roster_summary(updated_roster)
+
+    full_reply = f"{reply_draft}\n\n{intent_summary}{roster_summary}"
+    send_email(sender_email, "Re: " + subject, full_reply)
 
     return {
         "statusCode": 200,
