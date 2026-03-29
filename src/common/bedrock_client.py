@@ -115,6 +115,9 @@ def parse_player_email(
         # Parse the JSON response
         result = json.loads(assistant_text)
 
+        logger.info(
+            f"Result from LLM parsing {sender_email}, {result}"
+        )
         # Ensure all expected fields are present with defaults
         parsed: dict[str, Any] = {
             "intent": result.get("intent", "MAYBE"),
