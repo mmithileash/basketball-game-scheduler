@@ -125,7 +125,7 @@ resource "aws_iam_role_policy" "lambda_ses" {
           "ses:SendRawEmail",
         ]
         Resource = [
-          aws_ses_domain_identity.main.arn,
+          "arn:aws:ses:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:identity/*",
         ]
       }
     ]
@@ -149,6 +149,14 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
           "bedrock:InvokeModel",
         ]
         Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/${var.bedrock_model_id}"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe",
+        ]
+        Resource = "*"
       }
     ]
   })
