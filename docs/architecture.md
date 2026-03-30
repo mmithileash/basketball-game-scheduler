@@ -162,6 +162,8 @@ See you next week!
 
 ## 5. Game Finalisation Flow
 
+![Game Finalisation Flow](diagrams/05_game_finalizer_flow.png)
+
 ### Step-by-step
 
 1. **EventBridge fires** at 1:00 PM UTC every Saturday (cron: `cron(0 13 ? * SAT *)`) — after the game finishes
@@ -180,7 +182,7 @@ See you next week!
 
 ## 6. Data Model
 
-![Data Model](diagrams/05_data_model.png)
+![Data Model](diagrams/06_data_model.png)
 
 ### Two tables, no GSIs
 
