@@ -15,6 +15,8 @@ An automated, email-based basketball game scheduler built on AWS serverless infr
 
 ![Component Architecture](docs/diagrams/01_component_architecture.png)
 
+![Game Finalisation Flow](docs/diagrams/05_game_finalizer_flow.png)
+
 Fully serverless on AWS (eu-west-1):
 
 | Service | Role |
