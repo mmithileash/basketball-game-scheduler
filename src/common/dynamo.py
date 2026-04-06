@@ -82,6 +82,7 @@ def create_game(game_date: str) -> None:
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#YES"},
                     "players": {"M": {}},
+                    "guests": {"L": []},
                 }
             }
         },
@@ -91,6 +92,7 @@ def create_game(game_date: str) -> None:
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#NO"},
                     "players": {"M": {}},
+                    "guests": {"L": []},
                 }
             }
         },
@@ -100,6 +102,7 @@ def create_game(game_date: str) -> None:
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
+                    "guests": {"L": []},
                 }
             }
         },
@@ -128,7 +131,11 @@ def get_game_status(game_date: str) -> dict[str, Any] | None:
 def get_roster(game_date: str) -> dict[str, dict[str, Any]]:
     """Query all playerStatus# items for a game date.
 
-    Returns: {"YES": {email: {"guests": [...]}}, "NO": {...}, "MAYBE": {...}}
+    Returns: {
+        "YES": {"players": {email: {"name": str}}, "guests": [guest_obj]},
+        "NO":  {"players": {...}, "guests": [...]},
+        "MAYBE": {"players": {...}, "guests": [...]},
+    }
     """
     config = _get_config()
     table = _get_resource().Table(config.games_table)
@@ -140,16 +147,23 @@ def get_roster(game_date: str) -> dict[str, dict[str, Any]]:
         )
     )
 
-    roster: dict[str, dict[str, Any]] = {"YES": {}, "NO": {}, "MAYBE": {}}
+    roster: dict[str, dict[str, Any]] = {
+        "YES": {"players": {}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
     for item in response.get("Items", []):
-        sk = item["sk"]
-        status = sk.split("#", 1)[1]  # YES, NO, or MAYBE
-        players_map = item.get("players", {})
-        for email, data in players_map.items():
-            roster[status][email] = {"guests": data.get("guests", [])}
+        status = item["sk"].split("#", 1)[1]
+        roster[status]["players"] = {
+            email: {"name": data.get("name")}
+            for email, data in item.get("players", {}).items()
+        }
+        roster[status]["guests"] = list(item.get("guests", []))
 
-    logger.info("Roster for %s: YES=%d, NO=%d, MAYBE=%d",
-                game_date, len(roster["YES"]), len(roster["NO"]), len(roster["MAYBE"]))
+    logger.info(
+        f"Roster for {game_date}: YES={len(roster['YES']['players'])} players "
+        f"+ {len(roster['YES']['guests'])} guests"
+    )
     return roster
 
 
@@ -157,7 +171,7 @@ def update_player_response(
     game_date: str,
     email: str,
     new_status: str,
-    guests: list[str] | None = None,
+    name: str | None = None,
     old_status: str | None = None,
 ) -> None:
     """Update a player's response status.
@@ -167,12 +181,8 @@ def update_player_response(
     """
     config = _get_config()
     client = _get_client()
-    guest_list = guests or []
 
-    # Build the guest value for DynamoDB
-    guest_value = {"L": [{"S": g} for g in guest_list]}
-    player_value = {"M": {"guests": guest_value}}
-
+    player_value = {"M": {"name": {"S": name or ""}}}
     new_sk = f"playerStatus#{new_status}"
 
     if old_status and old_status != new_status:
@@ -204,8 +214,7 @@ def update_player_response(
                 },
             ]
         )
-        logger.info("Moved %s from %s to %s for game %s",
-                     email, old_status, new_status, game_date)
+        logger.info(f"Moved {email} from {old_status} to {new_status} for game {game_date}")
     else:
         client.update_item(
             TableName=config.games_table,
@@ -217,7 +226,7 @@ def update_player_response(
             ExpressionAttributeNames={"#email": email},
             ExpressionAttributeValues={":val": player_value},
         )
-        logger.info("Set %s to %s for game %s", email, new_status, game_date)
+        logger.info(f"Set {email} to {new_status} for game {game_date}")
 
 
 def update_game_status(game_date: str, status: str) -> None:
@@ -258,9 +267,209 @@ def get_pending_players(game_date: str) -> list[dict[str, Any]]:
     roster = get_roster(game_date)
 
     responded_emails: set[str] = set()
-    for status_players in roster.values():
-        responded_emails.update(status_players.keys())
+    for status_data in roster.values():
+        responded_emails.update(status_data["players"].keys())
 
     pending = [p for p in active_players if p["email"] not in responded_emails]
     logger.info("Found %d pending players for game %s", len(pending), game_date)
     return pending
+
+
+def get_player_name(email: str) -> str | None:
+    """Get the name of an active player from the Players table."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    response = table.get_item(Key={"email": email, "active": "true"})
+    item = response.get("Item")
+    if item:
+        return item.get("name") or None
+    return None
+
+
+def _guest_to_ddb(g: dict[str, Any]) -> dict[str, Any]:
+    """Convert a guest object dict to DynamoDB wire format."""
+    return {"M": {
+        "pk": {"S": g["pk"]},
+        "sk": {"S": g["sk"]},
+        "name": {"S": g["name"]},
+        "sponsorEmail": {"S": g["sponsorEmail"]},
+        "sponsorName": {"S": g["sponsorName"]},
+    }}
+
+
+def create_guest_entry(
+    game_date: str,
+    guest_name: str,
+    sponsor_email: str,
+    sponsor_name: str,
+    contact_email: str | None = None,
+) -> dict[str, Any]:
+    """Create a guest entry in the Players table.
+
+    Returns the guest object {pk, sk, name, sponsorEmail, sponsorName}
+    to be stored in the Games table guests list.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    if contact_email:
+        pk = contact_email
+        sk = "guest#active"
+    else:
+        pk = sponsor_email
+        sk = f"guest#active#{guest_name}"
+
+    table.put_item(Item={
+        "email": pk,
+        "active": sk,
+        "name": guest_name,
+        "sponsorEmail": sponsor_email,
+        "gameDate": game_date,
+    })
+
+    guest_obj = {
+        "pk": pk,
+        "sk": sk,
+        "name": guest_name,
+        "sponsorEmail": sponsor_email,
+        "sponsorName": sponsor_name,
+    }
+    logger.info(f"Created guest entry for {guest_name} (sponsor: {sponsor_email})")
+    return guest_obj
+
+
+def delete_guest_entries(guest_objects: list[dict[str, Any]]) -> None:
+    """Delete guest entries from the Players table by their pk/sk pairs."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    for guest in guest_objects:
+        table.delete_item(Key={"email": guest["pk"], "active": guest["sk"]})
+        logger.info(f"Deleted guest entry pk={guest['pk']} sk={guest['sk']}")
+
+
+def add_guests_to_game_status(
+    game_date: str,
+    status: str,
+    guests: list[dict[str, Any]],
+) -> None:
+    """Append guest objects to the guests list on a playerStatus item."""
+    if not guests:
+        return
+
+    config = _get_config()
+    client = _get_client()
+
+    guest_list = [_guest_to_ddb(g) for g in guests]
+
+    client.update_item(
+        TableName=config.games_table,
+        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        UpdateExpression="SET #guests = list_append(if_not_exists(#guests, :empty), :new)",
+        ExpressionAttributeNames={"#guests": "guests"},
+        ExpressionAttributeValues={
+            ":new": {"L": guest_list},
+            ":empty": {"L": []},
+        },
+    )
+    logger.info(f"Added {len(guests)} guest(s) to playerStatus#{status} for {game_date}")
+
+
+def remove_sponsor_guests_from_status(
+    game_date: str,
+    status: str,
+    sponsor_email: str,
+) -> list[dict[str, Any]]:
+    """Remove and return all guest objects for a sponsor from a playerStatus item.
+
+    Reads the current guests list, filters out the sponsor's guests,
+    writes back the remaining list, and returns the removed guest objects.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    client = _get_client()
+
+    response = table.get_item(
+        Key={"gameDate": game_date, "sk": f"playerStatus#{status}"}
+    )
+    item = response.get("Item", {})
+    all_guests: list[dict[str, Any]] = list(item.get("guests", []))
+
+    sponsor_guests = [g for g in all_guests if g.get("sponsorEmail") == sponsor_email]
+    remaining = [g for g in all_guests if g.get("sponsorEmail") != sponsor_email]
+
+    remaining_ddb = [_guest_to_ddb(g) for g in remaining]
+
+    client.update_item(
+        TableName=config.games_table,
+        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        UpdateExpression="SET #guests = :remaining",
+        ExpressionAttributeNames={"#guests": "guests"},
+        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
+    )
+    logger.info(
+        f"Removed {len(sponsor_guests)} guest(s) for {sponsor_email} "
+        f"from playerStatus#{status} for {game_date}"
+    )
+    return sponsor_guests
+
+
+def move_confirmed_guests(
+    game_date: str,
+    sponsor_email: str,
+    confirmed_names: list[str],
+) -> None:
+    """Move named guests from playerStatus#NO to playerStatus#YES.
+
+    Only guests matching confirmed_names (by name) and sponsorEmail are moved.
+    Remaining guests stay in NO.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    client = _get_client()
+
+    response = table.get_item(
+        Key={"gameDate": game_date, "sk": "playerStatus#NO"}
+    )
+    item = response.get("Item", {})
+    no_guests: list[dict[str, Any]] = list(item.get("guests", []))
+
+    confirmed_set = set(confirmed_names)
+    to_move = [
+        g for g in no_guests
+        if g.get("sponsorEmail") == sponsor_email and g.get("name") in confirmed_set
+    ]
+    remaining_no = [g for g in no_guests if g not in to_move]
+
+    if not to_move:
+        logger.info(f"No matching guests to move for {sponsor_email}, names={confirmed_names}")
+        return
+
+    remaining_ddb = [_guest_to_ddb(g) for g in remaining_no]
+    to_move_ddb = [_guest_to_ddb(g) for g in to_move]
+
+    client.transact_write_items(TransactItems=[
+        {
+            "Update": {
+                "TableName": config.games_table,
+                "Key": {"gameDate": {"S": game_date}, "sk": {"S": "playerStatus#NO"}},
+                "UpdateExpression": "SET #guests = :remaining",
+                "ExpressionAttributeNames": {"#guests": "guests"},
+                "ExpressionAttributeValues": {":remaining": {"L": remaining_ddb}},
+            }
+        },
+        {
+            "Update": {
+                "TableName": config.games_table,
+                "Key": {"gameDate": {"S": game_date}, "sk": {"S": "playerStatus#YES"}},
+                "UpdateExpression": "SET #guests = list_append(if_not_exists(#guests, :empty), :moving)",
+                "ExpressionAttributeNames": {"#guests": "guests"},
+                "ExpressionAttributeValues": {
+                    ":moving": {"L": to_move_ddb},
+                    ":empty": {"L": []},
+                },
+            }
+        },
+    ])
+    logger.info(f"Moved {len(to_move)} guest(s) from NO to YES for {sponsor_email}")
