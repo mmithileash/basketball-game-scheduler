@@ -115,12 +115,13 @@ def send_confirmation(
 
     subject = f"Confirmed: Basketball Game - {game_date}"
 
-    # Build roster list
+    yes_data = roster.get("YES", {})
     lines: list[str] = []
-    for email, data in roster.get("YES", {}).items():
-        lines.append(f"  - {email}")
-        for guest in data.get("guests", []):
-            lines.append(f"    + Guest: {guest}")
+    for email, data in yes_data.get("players", {}).items():
+        name = data.get("name") or email
+        lines.append(f"  - {name} ({email})")
+    for guest in yes_data.get("guests", []):
+        lines.append(f"    + Guest: {guest['name']} (via {guest['sponsorName']})")
 
     roster_text = "\n".join(lines) if lines else "  (none)"
 
@@ -134,3 +135,27 @@ def send_confirmation(
     )
 
     send_email(player_email, subject, body)
+
+
+def send_guest_followup(
+    sponsor_email: str,
+    sponsor_name: str | None,
+    guest_names: list[str],
+    game_date: str,
+) -> None:
+    """Ask the sponsor whether their guests are still attending after they declined."""
+    greeting = f"Hi {sponsor_name}" if sponsor_name else "Hi"
+    guest_list = ", ".join(guest_names)
+
+    subject = f"Your guests for the basketball game on {game_date}"
+    body = (
+        f"{greeting},\n\n"
+        f"We noticed you won't be able to make it to the basketball game on {game_date}. "
+        f"You had listed the following guest(s): {guest_list}.\n\n"
+        f"Are any of them still planning to attend?\n\n"
+        f"Please reply with the names of guests who are still coming, and optionally "
+        f"a contact email for each (e.g. 'John - john@example.com, Jane').\n\n"
+        f"If no reply is received before Friday's cutoff, we'll assume they won't attend.\n"
+    )
+
+    send_email(sponsor_email, subject, body)

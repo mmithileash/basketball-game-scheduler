@@ -8,11 +8,17 @@ import boto3
 from common.bedrock_client import parse_player_email
 from common.config import load_config
 from common.dynamo import (
+    add_guests_to_game_status,
+    create_guest_entry,
+    delete_guest_entries,
     get_current_open_game,
+    get_player_name,
     get_roster,
+    move_confirmed_guests,
+    remove_sponsor_guests_from_status,
     update_player_response,
 )
-from common.email_service import send_email
+from common.email_service import send_email, send_guest_followup
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -60,14 +66,16 @@ def _extract_sender_email(from_header: str) -> str:
 
 def _find_player_status(sender_email: str, roster: dict[str, Any]) -> str | None:
     """Find the player's current status in the roster."""
-    for status, players in roster.items():
-        if sender_email in players:
+    for status, data in roster.items():
+        if sender_email in data.get("players", {}):
             return status
     return None
 
 
-def _format_intent_summary(intent: str, guest_names: list[str]) -> str:
+def _format_intent_summary(intent: str, guests: list[dict], confirmed_names: list[str] | None = None) -> str:
     """Return a human-readable summary of what the system understood."""
+    guest_names = [g["name"] for g in guests] if guests else []
+    confirmed = confirmed_names or []
     summaries = {
         "JOIN": "We've marked you as playing.",
         "DECLINE": "We've marked you as not playing.",
@@ -76,6 +84,12 @@ def _format_intent_summary(intent: str, guest_names: list[str]) -> str:
         "UPDATE_GUESTS": f"We've updated your guest list to: {', '.join(guest_names)}.",
         "QUERY_ROSTER": "You asked about the current roster.",
         "QUERY_PLAYER": "You asked about a player's status.",
+        "GUEST_CONFIRM": (
+            f"We've confirmed guest(s) still attending: {', '.join(confirmed)}."
+            if confirmed
+            else "We've noted your message about your guests."
+        ),
+        "GUEST_DECLINE": "We've noted that your guests won't be attending.",
     }
     return summaries.get(intent, "We weren't sure what you meant.")
 
@@ -85,14 +99,17 @@ def _format_roster_summary(roster: dict[str, Any]) -> str:
     sections = []
 
     for status, label in [("YES", "Playing"), ("NO", "Not Playing"), ("MAYBE", "Maybe")]:
-        players = roster.get(status, {})
-        if players:
+        data = roster.get(status, {})
+        players = data.get("players", {})
+        guests = data.get("guests", [])
+        if players or guests:
             lines = []
-            for player_email, data in players.items():
-                lines.append(f"  - {player_email}")
-                for guest in data.get("guests", []):
-                    lines.append(f"    + Guest: {guest}")
-            sections.append(f"{label} ({len(players)}):\n" + "\n".join(lines))
+            for player_email, pdata in players.items():
+                name = pdata.get("name") or player_email
+                lines.append(f"  - {name} ({player_email})")
+            for guest in guests:
+                lines.append(f"  + Guest: {guest['name']} (via {guest['sponsorName']})")
+            sections.append(f"{label} ({len(players)} players, {len(guests)} guests):\n" + "\n".join(lines))
 
     if not sections:
         return "\n\n---\nNo responses yet."
@@ -146,32 +163,72 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Parse intent using Bedrock
     parsed = parse_player_email(body, sender_email, roster)
     intent = parsed["intent"]
-    guest_names = parsed.get("guest_names", [])
     reply_draft = parsed.get("reply_draft", "Thanks for your reply!")
 
     logger.info("Intent for %s: %s (old_status: %s)", sender_email, intent, old_status)
 
     # Process based on intent
     if intent == "JOIN":
-        update_player_response(
-            game_date, sender_email, "YES", guests=None, old_status=old_status
-        )
+        player_name = get_player_name(sender_email)
+        update_player_response(game_date, sender_email, "YES", name=player_name, old_status=old_status)
     elif intent == "DECLINE":
-        update_player_response(
-            game_date, sender_email, "NO", guests=None, old_status=old_status
-        )
+        player_name = get_player_name(sender_email)
+        update_player_response(game_date, sender_email, "NO", name=player_name, old_status=old_status)
+        # Move any guests this player brought from YES to NO
+        sponsor_guests = remove_sponsor_guests_from_status(game_date, "YES", sender_email)
+        if sponsor_guests:
+            add_guests_to_game_status(game_date, "NO", sponsor_guests)
+            guest_names = [g["name"] for g in sponsor_guests]
+            send_guest_followup(
+                sponsor_email=sender_email,
+                sponsor_name=player_name,
+                guest_names=guest_names,
+                game_date=game_date,
+            )
     elif intent == "MAYBE":
-        update_player_response(
-            game_date, sender_email, "MAYBE", guests=None, old_status=old_status
-        )
+        player_name = get_player_name(sender_email)
+        update_player_response(game_date, sender_email, "MAYBE", name=player_name, old_status=old_status)
     elif intent == "BRING_GUESTS":
-        update_player_response(
-            game_date, sender_email, "YES", guests=guest_names, old_status=old_status
-        )
+        player_name = get_player_name(sender_email)
+        update_player_response(game_date, sender_email, "YES", name=player_name, old_status=old_status)
+        guest_objects = [
+            create_guest_entry(
+                game_date,
+                g["name"],
+                sender_email,
+                player_name or sender_email,
+                g.get("contact_email"),
+            )
+            for g in parsed.get("guests", [])
+        ]
+        if guest_objects:
+            add_guests_to_game_status(game_date, "YES", guest_objects)
     elif intent == "UPDATE_GUESTS":
-        update_player_response(
-            game_date, sender_email, "YES", guests=guest_names, old_status=old_status
-        )
+        player_name = get_player_name(sender_email)
+        old_guest_objects = remove_sponsor_guests_from_status(game_date, "YES", sender_email)
+        if old_guest_objects:
+            delete_guest_entries(old_guest_objects)
+        new_guest_objects = [
+            create_guest_entry(
+                game_date,
+                g["name"],
+                sender_email,
+                player_name or sender_email,
+                g.get("contact_email"),
+            )
+            for g in parsed.get("guests", [])
+        ]
+        if new_guest_objects:
+            add_guests_to_game_status(game_date, "YES", new_guest_objects)
+    elif intent == "GUEST_CONFIRM":
+        confirmed_names = parsed.get("confirmed_guest_names", [])
+        if confirmed_names:
+            move_confirmed_guests(game_date, sender_email, confirmed_names)
+        else:
+            logger.warning(f"GUEST_CONFIRM from {sender_email} but no confirmed_guest_names in parsed result")
+    elif intent == "GUEST_DECLINE":
+        # Guests remain in NO — no action needed; game_finalizer will clean up
+        logger.info(f"GUEST_DECLINE from {sender_email} — guests remain in NO")
     elif intent in ("QUERY_ROSTER", "QUERY_PLAYER"):
         # No DB update needed; reply_draft from Bedrock contains the answer
         pass
@@ -179,7 +236,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         logger.warning("Unknown intent: %s", intent)
 
     # Build full reply with intent summary and roster
-    intent_summary = _format_intent_summary(intent, guest_names)
+    intent_summary = _format_intent_summary(
+        intent,
+        parsed.get("guests", []),
+        parsed.get("confirmed_guest_names", []),
+    )
     updated_roster = get_roster(game_date)
     roster_summary = _format_roster_summary(updated_roster)
 

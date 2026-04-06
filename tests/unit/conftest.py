@@ -46,9 +46,11 @@ def dynamodb_tables():
             TableName="test-players",
             KeySchema=[
                 {"AttributeName": "email", "KeyType": "HASH"},
+                {"AttributeName": "active", "KeyType": "RANGE"},
             ],
             AttributeDefinitions=[
                 {"AttributeName": "email", "AttributeType": "S"},
+                {"AttributeName": "active", "AttributeType": "S"},
             ],
             BillingMode="PAY_PER_REQUEST",
         )

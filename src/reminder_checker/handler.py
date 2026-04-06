@@ -14,21 +14,16 @@ from common.email_service import send_cancellation, send_confirmation, send_remi
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-config = load_config()
-MIN_PLAYERS = config.min_players
-
-
 def _count_confirmed(roster: dict[str, Any]) -> int:
     """Count confirmed players including their guests."""
-    count = 0
-    for email_addr, data in roster.get("YES", {}).items():
-        count += 1  # The player
-        count += len(data.get("guests", []))
-    return count
+    yes = roster.get("YES", {})
+    return len(yes.get("players", {})) + len(yes.get("guests", []))
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler: send reminders or cancellations based on game status."""
+    config = load_config()
+    MIN_PLAYERS = config.min_players
     open_game = get_current_open_game()
     if not open_game:
         logger.info("No open game found, nothing to do")
@@ -81,8 +76,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
             # Notify all players (confirmed + pending)
             all_emails: set[str] = set()
-            for status_players in roster.values():
-                all_emails.update(status_players.keys())
+            for status_data in roster.values():
+                all_emails.update(status_data["players"].keys())
             pending = get_pending_players(game_date)
             for player in pending:
                 all_emails.add(player["email"])
@@ -107,7 +102,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         else:
             # Game is confirmed - send confirmation to YES players
             logger.info("Friday: confirming game %s (%d confirmed)", game_date, confirmed_count)
-            yes_players = roster.get("YES", {})
+            yes_players = roster.get("YES", {}).get("players", {})
             for player_email in yes_players:
                 try:
                     send_confirmation(player_email, game_date, roster)

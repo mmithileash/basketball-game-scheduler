@@ -44,10 +44,11 @@ def _seed_game_with_status(status: str) -> None:
                     "sk": {"S": "playerStatus#YES"},
                     "players": {
                         "M": {
-                            "alice@example.com": {"M": {"guests": {"L": []}}},
-                            "bob@example.com": {"M": {"guests": {"L": []}}},
+                            "alice@example.com": {"M": {"name": {"S": "Alice"}}},
+                            "bob@example.com": {"M": {"name": {"S": "Bob"}}},
                         }
                     },
+                    "guests": {"L": []},
                 }
             }
         },
@@ -57,6 +58,7 @@ def _seed_game_with_status(status: str) -> None:
                     "gameDate": {"S": GAME_DATE},
                     "sk": {"S": "playerStatus#NO"},
                     "players": {"M": {}},
+                    "guests": {"L": []},
                 }
             }
         },
@@ -66,6 +68,7 @@ def _seed_game_with_status(status: str) -> None:
                     "gameDate": {"S": GAME_DATE},
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
+                    "guests": {"L": []},
                 }
             }
         },
@@ -160,3 +163,105 @@ class TestNoGameReturnsEarly:
         assert result["statusCode"] == 200
         assert result["body"] == "No game found"
         assert _get_game_status(dynamodb_tables) is None
+
+
+@pytest.mark.integration
+def test_guest_cleanup_after_game_finalizer(
+    dynamodb_tables, seed_players, ses_identity
+):
+    """Full flow: create game, add guests, run game_finalizer, verify guest entries deleted."""
+    from datetime import date
+    from unittest.mock import patch
+
+    game_date = date.today().isoformat()
+
+    from common.dynamo import create_game, add_guests_to_game_status, create_guest_entry, get_roster
+    create_game(game_date)
+
+    # Add a guest entry (simulating BRING_GUESTS flow)
+    guest_obj = create_guest_entry(
+        game_date=game_date,
+        guest_name="TestGuest",
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        contact_email="testguest@example.com",
+    )
+    add_guests_to_game_status(game_date, "YES", [guest_obj])
+
+    # Verify guest exists in Players table
+    players_table = dynamodb_tables.Table("Players")
+    item = players_table.get_item(
+        Key={"email": "testguest@example.com", "active": "guest#active"}
+    ).get("Item")
+    assert item is not None
+    assert item["name"] == "TestGuest"
+
+    games_table = dynamodb_tables.Table("Games")
+    try:
+        # Run game_finalizer
+        with patch("game_finalizer.handler.date") as mock_date:
+            mock_date.today.return_value = date.fromisoformat(game_date)
+            from game_finalizer.handler import handler as finalizer_handler
+            result = finalizer_handler({}, None)
+
+        assert result["statusCode"] == 200
+        assert result["body"]["action"] == "game_marked_played"
+        assert result["body"]["guestsDeleted"] == 1
+
+        # Verify guest entry deleted from Players table
+        item_after = players_table.get_item(
+            Key={"email": "testguest@example.com", "active": "guest#active"}
+        ).get("Item")
+        assert item_after is None
+    finally:
+        for sk in ("gameStatus", "playerStatus#YES", "playerStatus#NO", "playerStatus#MAYBE"):
+            games_table.delete_item(Key={"gameDate": game_date, "sk": sk})
+        # Best-effort: delete guest entry in case handler didn't (e.g. assertion failure)
+        players_table.delete_item(Key={"email": "testguest@example.com", "active": "guest#active"})
+
+
+@pytest.mark.integration
+def test_decline_with_guests_moves_to_no(dynamodb_tables, seed_players, ses_identity):
+    """Player declines: their guests move from YES to NO guests array."""
+    from datetime import date
+
+    game_date = "2026-05-10"  # Fixed date to avoid collision with other tests
+
+    from common.dynamo import (
+        create_game, add_guests_to_game_status, create_guest_entry,
+        update_player_response, get_roster,
+        remove_sponsor_guests_from_status,
+    )
+    create_game(game_date)
+    update_player_response(game_date, "alice@example.com", "YES", name="Alice")
+
+    guest_obj = create_guest_entry(
+        game_date=game_date,
+        guest_name="John",
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        contact_email="john@example.com",
+    )
+    add_guests_to_game_status(game_date, "YES", [guest_obj])
+
+    # Verify guest is in YES
+    roster = get_roster(game_date)
+    assert len(roster["YES"]["guests"]) == 1
+
+    # Simulate DECLINE by alice
+    update_player_response(game_date, "alice@example.com", "NO", name="Alice", old_status="YES")
+    guests = remove_sponsor_guests_from_status(game_date, "YES", "alice@example.com")
+    add_guests_to_game_status(game_date, "NO", guests)
+
+    # Verify guest moved to NO
+    roster = get_roster(game_date)
+    assert len(roster["YES"]["guests"]) == 0
+    assert len(roster["NO"]["guests"]) == 1
+    assert roster["NO"]["guests"][0]["name"] == "John"
+
+    # Cleanup
+    games_table = dynamodb_tables.Table("Games")
+    players_table = dynamodb_tables.Table("Players")
+    for sk in ("gameStatus", "playerStatus#YES", "playerStatus#NO", "playerStatus#MAYBE"):
+        games_table.delete_item(Key={"gameDate": game_date, "sk": sk})
+    players_table.delete_item(Key={"email": "john@example.com", "active": "guest#active"})

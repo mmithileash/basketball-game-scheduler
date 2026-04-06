@@ -7,12 +7,18 @@ from moto import mock_aws
 
 from common.dynamo import (
     _next_saturday,
+    add_guests_to_game_status,
     create_game,
+    create_guest_entry,
+    delete_guest_entries,
     get_active_players,
     get_current_open_game,
     get_game_status,
     get_pending_players,
+    get_player_name,
     get_roster,
+    move_confirmed_guests,
+    remove_sponsor_guests_from_status,
     update_game_status,
     update_player_response,
 )
@@ -24,8 +30,14 @@ def _create_tables():
 
     dynamodb.create_table(
         TableName="test-players",
-        KeySchema=[{"AttributeName": "email", "KeyType": "HASH"}],
-        AttributeDefinitions=[{"AttributeName": "email", "AttributeType": "S"}],
+        KeySchema=[
+            {"AttributeName": "email", "KeyType": "HASH"},
+            {"AttributeName": "active", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "email", "AttributeType": "S"},
+            {"AttributeName": "active", "AttributeType": "S"},
+        ],
         BillingMode="PAY_PER_REQUEST",
     )
 
@@ -77,7 +89,7 @@ def test_get_active_players(sample_players):
 @pytest.mark.unit
 @mock_aws
 def test_create_game(sample_game_date):
-    """Create game, verify all 4 items exist."""
+    """Create game, verify all 4 items exist with guests list initialised."""
     _reset_dynamo_caches()
     dynamodb = _create_tables()
 
@@ -102,10 +114,11 @@ def test_create_game(sample_game_date):
     assert game_status_item["status"] == "OPEN"
     assert "createdAt" in game_status_item
 
-    # Verify playerStatus items have empty players maps
+    # Verify playerStatus items have empty players maps and guests list
     for sk in ("playerStatus#YES", "playerStatus#NO", "playerStatus#MAYBE"):
         item = next(i for i in items if i["sk"] == sk)
         assert item["players"] == {}
+        assert item["guests"] == []
 
 
 @pytest.mark.unit
@@ -139,23 +152,22 @@ def test_get_game_status_not_found():
 @pytest.mark.unit
 @mock_aws
 def test_get_roster(sample_game_date):
-    """Create game, manually add players, verify roster structure."""
+    """Create game, add players, verify new roster structure."""
     _reset_dynamo_caches()
-    dynamodb = _create_tables()
+    _create_tables()
 
     create_game(sample_game_date)
 
-    # Manually add players to the roster via update_player_response
-    update_player_response(sample_game_date, "alice@example.com", "YES")
-    update_player_response(sample_game_date, "bob@example.com", "NO")
-    update_player_response(sample_game_date, "charlie@example.com", "MAYBE")
+    update_player_response(sample_game_date, "alice@example.com", "YES", name="Alice")
+    update_player_response(sample_game_date, "bob@example.com", "NO", name="Bob")
+    update_player_response(sample_game_date, "charlie@example.com", "MAYBE", name="Charlie")
 
     roster = get_roster(sample_game_date)
 
-    assert "alice@example.com" in roster["YES"]
-    assert "bob@example.com" in roster["NO"]
-    assert "charlie@example.com" in roster["MAYBE"]
-    assert roster["YES"]["alice@example.com"]["guests"] == []
+    assert "alice@example.com" in roster["YES"]["players"]
+    assert "bob@example.com" in roster["NO"]["players"]
+    assert "charlie@example.com" in roster["MAYBE"]["players"]
+    assert roster["YES"]["guests"] == []
 
 
 @pytest.mark.unit
@@ -166,53 +178,35 @@ def test_update_player_response_new(sample_game_date):
     _create_tables()
 
     create_game(sample_game_date)
-    update_player_response(sample_game_date, "alice@example.com", "YES")
+    update_player_response(sample_game_date, "alice@example.com", "YES", name="Alice")
 
     roster = get_roster(sample_game_date)
-    assert "alice@example.com" in roster["YES"]
-    assert "alice@example.com" not in roster["NO"]
-    assert "alice@example.com" not in roster["MAYBE"]
+    assert "alice@example.com" in roster["YES"]["players"]
+    assert roster["YES"]["players"]["alice@example.com"]["name"] == "Alice"
+    assert "alice@example.com" not in roster["NO"]["players"]
+    assert "alice@example.com" not in roster["MAYBE"]["players"]
 
 
 @pytest.mark.unit
 @mock_aws
 def test_update_player_response_change(sample_game_date):
-    """Add player to YES, then change to NO, verify TransactWriteItems."""
+    """Add player to YES, then change to NO."""
     _reset_dynamo_caches()
     _create_tables()
 
     create_game(sample_game_date)
-    update_player_response(sample_game_date, "alice@example.com", "YES")
+    update_player_response(sample_game_date, "alice@example.com", "YES", name="Alice")
 
     roster = get_roster(sample_game_date)
-    assert "alice@example.com" in roster["YES"]
+    assert "alice@example.com" in roster["YES"]["players"]
 
-    # Change from YES to NO
     update_player_response(
-        sample_game_date, "alice@example.com", "NO", old_status="YES"
+        sample_game_date, "alice@example.com", "NO", name="Alice", old_status="YES"
     )
 
     roster = get_roster(sample_game_date)
-    assert "alice@example.com" not in roster["YES"]
-    assert "alice@example.com" in roster["NO"]
-
-
-@pytest.mark.unit
-@mock_aws
-def test_update_player_response_with_guests(sample_game_date):
-    """Add player with guests, verify guest names stored."""
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)
-    update_player_response(
-        sample_game_date, "alice@example.com", "YES",
-        guests=["Mike", "Sarah"],
-    )
-
-    roster = get_roster(sample_game_date)
-    assert "alice@example.com" in roster["YES"]
-    assert roster["YES"]["alice@example.com"]["guests"] == ["Mike", "Sarah"]
+    assert "alice@example.com" not in roster["YES"]["players"]
+    assert "alice@example.com" in roster["NO"]["players"]
 
 
 @pytest.mark.unit
@@ -319,8 +313,8 @@ def test_get_pending_players(sample_players, sample_game_date):
     create_game(sample_game_date)
 
     # Only alice and bob have responded
-    update_player_response(sample_game_date, "alice@example.com", "YES")
-    update_player_response(sample_game_date, "bob@example.com", "NO")
+    update_player_response(sample_game_date, "alice@example.com", "YES", name="Alice")
+    update_player_response(sample_game_date, "bob@example.com", "NO", name="Bob")
 
     pending = get_pending_players(sample_game_date)
     pending_emails = {p["email"] for p in pending}
@@ -333,3 +327,197 @@ def test_get_pending_players(sample_players, sample_game_date):
     assert "bob@example.com" not in pending_emails
     # eve is inactive
     assert "eve@example.com" not in pending_emails
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_player_name_found():
+    """Returns name for a known active player."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+    table = dynamodb.Table("test-players")
+    table.put_item(Item={"email": "alice@example.com", "active": "true", "name": "Alice"})
+
+    result = get_player_name("alice@example.com")
+    assert result == "Alice"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_player_name_not_found():
+    """Returns None for unknown player."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    result = get_player_name("nobody@example.com")
+    assert result is None
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_guest_entry_with_contact_email(sample_game_date):
+    """Guest with contact email uses contactEmail as PK, sk=guest#active."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    result = create_guest_entry(
+        game_date=sample_game_date,
+        guest_name="John",
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        contact_email="john@example.com",
+    )
+
+    assert result["pk"] == "john@example.com"
+    assert result["sk"] == "guest#active"
+    assert result["name"] == "John"
+    assert result["sponsorEmail"] == "alice@example.com"
+    assert result["sponsorName"] == "Alice"
+
+    table = dynamodb.Table("test-players")
+    item = table.get_item(Key={"email": "john@example.com", "active": "guest#active"})["Item"]
+    assert item["name"] == "John"
+    assert item["sponsorEmail"] == "alice@example.com"
+    assert item["gameDate"] == sample_game_date
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_guest_entry_without_contact_email(sample_game_date):
+    """Guest without contact email uses sponsorEmail as PK, sk=guest#active#<name>."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    result = create_guest_entry(
+        game_date=sample_game_date,
+        guest_name="Jane",
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        contact_email=None,
+    )
+
+    assert result["pk"] == "alice@example.com"
+    assert result["sk"] == "guest#active#Jane"
+    assert result["name"] == "Jane"
+
+    table = dynamodb.Table("test-players")
+    item = table.get_item(Key={"email": "alice@example.com", "active": "guest#active#Jane"})["Item"]
+    assert item["name"] == "Jane"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_delete_guest_entries(sample_game_date):
+    """Deletes guest entries from Players table by pk/sk pairs."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    g1 = create_guest_entry(sample_game_date, "John", "alice@example.com", "Alice", "john@example.com")
+    g2 = create_guest_entry(sample_game_date, "Jane", "alice@example.com", "Alice", None)
+
+    delete_guest_entries([g1, g2])
+
+    table = dynamodb.Table("test-players")
+    assert "Item" not in table.get_item(Key={"email": g1["pk"], "active": g1["sk"]})
+    assert "Item" not in table.get_item(Key={"email": g2["pk"], "active": g2["sk"]})
+
+
+@pytest.mark.unit
+@mock_aws
+def test_add_guests_to_game_status(sample_game_date):
+    """Appends guest objects to the guests list on a playerStatus item."""
+    _reset_dynamo_caches()
+    _create_tables()
+    create_game(sample_game_date)
+
+    guest_obj = {
+        "pk": "john@example.com",
+        "sk": "guest#active",
+        "name": "John",
+        "sponsorEmail": "alice@example.com",
+        "sponsorName": "Alice",
+    }
+    add_guests_to_game_status(sample_game_date, "YES", [guest_obj])
+
+    roster = get_roster(sample_game_date)
+    assert len(roster["YES"]["guests"]) == 1
+    assert roster["YES"]["guests"][0]["name"] == "John"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_remove_sponsor_guests_from_status(sample_game_date):
+    """Removes and returns guest objects for a given sponsor from a status."""
+    _reset_dynamo_caches()
+    _create_tables()
+    create_game(sample_game_date)
+
+    guests = [
+        {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+         "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+        {"pk": "bob@example.com", "sk": "guest#active", "name": "Bob",
+         "sponsorEmail": "charlie@example.com", "sponsorName": "Charlie"},
+    ]
+    add_guests_to_game_status(sample_game_date, "YES", guests)
+
+    removed = remove_sponsor_guests_from_status(sample_game_date, "YES", "alice@example.com")
+
+    assert len(removed) == 1
+    assert removed[0]["name"] == "John"
+
+    roster = get_roster(sample_game_date)
+    assert len(roster["YES"]["guests"]) == 1
+    assert roster["YES"]["guests"][0]["name"] == "Bob"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_move_confirmed_guests(sample_game_date):
+    """Moves named guests from NO guests array to YES guests array."""
+    _reset_dynamo_caches()
+    _create_tables()
+    create_game(sample_game_date)
+
+    guests = [
+        {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+         "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+        {"pk": "alice@example.com", "sk": "guest#active#Jane", "name": "Jane",
+         "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+    ]
+    add_guests_to_game_status(sample_game_date, "NO", guests)
+
+    move_confirmed_guests(sample_game_date, "alice@example.com", confirmed_names=["John"])
+
+    roster = get_roster(sample_game_date)
+    assert len(roster["YES"]["guests"]) == 1
+    assert roster["YES"]["guests"][0]["name"] == "John"
+    assert len(roster["NO"]["guests"]) == 1
+    assert roster["NO"]["guests"][0]["name"] == "Jane"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_move_confirmed_guests_ignores_other_sponsors(sample_game_date):
+    """move_confirmed_guests does not move guests belonging to a different sponsor."""
+    _reset_dynamo_caches()
+    _create_tables()
+    create_game(sample_game_date)
+
+    guests = [
+        {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+         "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+        {"pk": "dave@example.com", "sk": "guest#active", "name": "Dave",
+         "sponsorEmail": "bob@example.com", "sponsorName": "Bob"},
+    ]
+    add_guests_to_game_status(sample_game_date, "NO", guests)
+
+    move_confirmed_guests(sample_game_date, "alice@example.com", confirmed_names=["John"])
+
+    roster = get_roster(sample_game_date)
+    # John (alice's guest) moved to YES
+    assert len(roster["YES"]["guests"]) == 1
+    assert roster["YES"]["guests"][0]["name"] == "John"
+    # Dave (bob's guest) stays in NO
+    assert len(roster["NO"]["guests"]) == 1
+    assert roster["NO"]["guests"][0]["name"] == "Dave"
+    assert roster["NO"]["guests"][0]["sponsorEmail"] == "bob@example.com"
