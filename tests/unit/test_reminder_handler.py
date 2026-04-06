@@ -22,12 +22,18 @@ def test_wednesday_below_minimum(mocker):
         "reminder_checker.handler.get_roster",
         return_value={
             "YES": {
-                "alice@example.com": {"guests": []},
-                "bob@example.com": {"guests": []},
-                "charlie@example.com": {"guests": ["guest1"]},
+                "players": {
+                    "alice@example.com": {"name": "Alice"},
+                    "bob@example.com": {"name": "Bob"},
+                    "charlie@example.com": {"name": "Charlie"},
+                },
+                "guests": [{"name": "guest1", "sponsorName": "Charlie"}],
             },
-            "NO": {"dave@example.com": {"guests": []}},
-            "MAYBE": {},
+            "NO": {
+                "players": {"dave@example.com": {"name": "Dave"}},
+                "guests": [],
+            },
+            "MAYBE": {"players": {}, "guests": []},
         },
     )
     mocker.patch(
@@ -64,11 +70,11 @@ def test_wednesday_above_minimum(mocker):
         "reminder_checker.handler.get_roster",
         return_value={
             "YES": {
-                f"player{i}@example.com": {"guests": []}
-                for i in range(7)
+                "players": {f"player{i}@example.com": {"name": f"Player{i}"} for i in range(7)},
+                "guests": [],
             },
-            "NO": {},
-            "MAYBE": {},
+            "NO": {"players": {}, "guests": []},
+            "MAYBE": {"players": {}, "guests": []},
         },
     )
     mock_reminder = mocker.patch("reminder_checker.handler.send_reminder")
@@ -95,11 +101,17 @@ def test_friday_below_minimum(mocker):
         "reminder_checker.handler.get_roster",
         return_value={
             "YES": {
-                "alice@example.com": {"guests": []},
-                "bob@example.com": {"guests": []},
+                "players": {
+                    "alice@example.com": {"name": "Alice"},
+                    "bob@example.com": {"name": "Bob"},
+                },
+                "guests": [],
             },
-            "NO": {"charlie@example.com": {"guests": []}},
-            "MAYBE": {},
+            "NO": {
+                "players": {"charlie@example.com": {"name": "Charlie"}},
+                "guests": [],
+            },
+            "MAYBE": {"players": {}, "guests": []},
         },
     )
     mocker.patch(
@@ -139,11 +151,14 @@ def test_friday_above_minimum(mocker):
 
     roster = {
         "YES": {
-            f"player{i}@example.com": {"guests": []}
-            for i in range(7)
+            "players": {f"player{i}@example.com": {"name": f"Player{i}"} for i in range(7)},
+            "guests": [],
         },
-        "NO": {"declined@example.com": {"guests": []}},
-        "MAYBE": {},
+        "NO": {
+            "players": {"declined@example.com": {"name": "Declined"}},
+            "guests": [],
+        },
+        "MAYBE": {"players": {}, "guests": []},
     }
     mocker.patch("reminder_checker.handler.get_roster", return_value=roster)
     mock_confirm = mocker.patch("reminder_checker.handler.send_confirmation")
@@ -179,11 +194,18 @@ def test_count_confirmed_with_guests():
     """Verify _count_confirmed counts players and their guests."""
     roster = {
         "YES": {
-            "alice@example.com": {"guests": ["Mike", "Sarah"]},
-            "bob@example.com": {"guests": []},
-            "charlie@example.com": {"guests": ["Dave"]},
+            "players": {
+                "alice@example.com": {"name": "Alice"},
+                "bob@example.com": {"name": "Bob"},
+                "charlie@example.com": {"name": "Charlie"},
+            },
+            "guests": [
+                {"name": "Mike", "sponsorName": "Alice"},
+                {"name": "Sarah", "sponsorName": "Alice"},
+                {"name": "Dave", "sponsorName": "Charlie"},
+            ],
         },
-        "NO": {},
-        "MAYBE": {},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
     }
     assert _count_confirmed(roster) == 6  # 3 players + 3 guests
