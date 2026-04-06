@@ -7,6 +7,7 @@ from common.email_service import (
     send_cancellation,
     send_confirmation,
     send_email,
+    send_guest_followup,
     send_reminder,
 )
 
@@ -136,11 +137,14 @@ def test_send_confirmation(mocker):
 
     roster = {
         "YES": {
-            "alice@example.com": {"guests": ["Mike"]},
-            "bob@example.com": {"guests": []},
+            "players": {
+                "alice@example.com": {"name": "Alice"},
+                "bob@example.com": {"name": "Bob"},
+            },
+            "guests": [{"name": "Mike", "sponsorName": "Alice"}],
         },
-        "NO": {"charlie@example.com": {"guests": []}},
-        "MAYBE": {},
+        "NO": {"players": {"charlie@example.com": {"name": "Charlie"}}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
     }
 
     mock_send = mocker.patch("common.email_service.send_email")
@@ -157,3 +161,69 @@ def test_send_confirmation(mocker):
     assert "Mike" in body
     assert "10:00 AM" in body
     assert "Main Court" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_guest_followup():
+    """send_guest_followup sends email listing guests to the sponsor."""
+    ses = _setup_ses()
+
+    send_guest_followup(
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        guest_names=["John", "Jane"],
+        game_date="2026-04-05",
+    )
+
+    # If no exception is raised, the email was sent successfully via SES mock
+    quota = ses.get_send_quota()
+    assert quota["SentLast24Hours"] >= 1.0
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_guest_followup_with_mocker(mocker):
+    """Verify guest followup contains sponsor name and guest list."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_guest_followup(
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        guest_names=["John", "Jane"],
+        game_date="2026-04-05",
+    )
+
+    mock_send.assert_called_once()
+    subject = mock_send.call_args[0][1]
+    body = mock_send.call_args[0][2]
+
+    assert "2026-04-05" in subject
+    assert "Hi Alice" in body
+    assert "John" in body
+    assert "Jane" in body
+    assert "guests" in body.lower()
+    assert "won't be able to make it" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_guest_followup_without_name(mocker):
+    """Verify generic greeting when sponsor name is None."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_guest_followup(
+        sponsor_email="bob@example.com",
+        sponsor_name=None,
+        guest_names=["John"],
+        game_date="2026-04-05",
+    )
+
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+
+    assert body.startswith("Hi,") or body.startswith("Hi\n")
+    assert "Hi None" not in body
+    assert "John" in body
