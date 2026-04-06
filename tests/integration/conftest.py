@@ -234,17 +234,12 @@ def seed_game(dynamodb_tables):
                     "sk": {"S": "playerStatus#YES"},
                     "players": {
                         "M": {
-                            "alice@example.com": {
-                                "M": {"guests": {"L": []}}
-                            },
-                            "bob@example.com": {
-                                "M": {"guests": {"L": []}}
-                            },
-                            "charlie@example.com": {
-                                "M": {"guests": {"L": []}}
-                            },
+                            "alice@example.com": {"M": {"name": {"S": "Alice"}}},
+                            "bob@example.com": {"M": {"name": {"S": "Bob"}}},
+                            "charlie@example.com": {"M": {"name": {"S": "Charlie"}}},
                         }
                     },
+                    "guests": {"L": []},
                 }
             }
         },
@@ -255,11 +250,10 @@ def seed_game(dynamodb_tables):
                     "sk": {"S": "playerStatus#NO"},
                     "players": {
                         "M": {
-                            "dave@example.com": {
-                                "M": {"guests": {"L": []}}
-                            },
+                            "dave@example.com": {"M": {"name": {"S": "Dave"}}},
                         }
                     },
+                    "guests": {"L": []},
                 }
             }
         },
@@ -269,6 +263,7 @@ def seed_game(dynamodb_tables):
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
+                    "guests": {"L": []},
                 }
             }
         },
