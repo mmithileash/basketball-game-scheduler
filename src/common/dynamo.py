@@ -261,6 +261,20 @@ def get_current_open_game() -> dict[str, Any] | None:
     return None
 
 
+def get_upcoming_game() -> dict[str, Any] | None:
+    """Get the gameStatus item for the upcoming Saturday regardless of status.
+
+    Returns the raw game record (with the ``status`` field intact, e.g. OPEN /
+    CANCELLED / PLAYED) or None if no record exists for that date. Callers that
+    only want games still accepting RSVPs should use ``get_current_open_game``
+    instead; callers that need to react differently to a cancelled game (e.g.
+    the email processor) should use this function and branch on ``status``.
+    """
+    saturday = _next_saturday(date.today())
+    game_date = saturday.isoformat()
+    return get_game_status(game_date)
+
+
 def get_pending_players(game_date: str) -> list[dict[str, Any]]:
     """Get active players who haven't responded to the game."""
     active_players = get_active_players()

@@ -11,9 +11,9 @@ from common.dynamo import (
     add_guests_to_game_status,
     create_guest_entry,
     delete_guest_entries,
-    get_current_open_game,
     get_player_name,
     get_roster,
+    get_upcoming_game,
     move_confirmed_guests,
     remove_sponsor_guests_from_status,
     update_player_response,
@@ -142,10 +142,30 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     sender_email = _extract_sender_email(from_header)
     logger.info("Email from %s, subject: %s", sender_email, subject)
 
-    # Look up current open game
-    open_game = get_current_open_game()
-    if not open_game:
-        logger.warning("No open game found, ignoring email from %s", sender_email)
+    # Look up the upcoming Saturday's game (regardless of status). We need
+    # the raw status here so we can distinguish "no game scheduled at all"
+    # from "the game was cancelled" — those should produce different replies.
+    upcoming_game = get_upcoming_game()
+    upcoming_status = upcoming_game.get("status") if upcoming_game else None
+
+    if upcoming_status == "CANCELLED":
+        logger.info(
+            "Upcoming game %s is CANCELLED, replying to %s without RSVP processing",
+            upcoming_game["gameDate"], sender_email,
+        )
+        send_email(
+            sender_email,
+            "Re: " + subject,
+            f"The game on {upcoming_game['gameDate']} has been cancelled. "
+            "A new game will be announced on Monday!",
+        )
+        return {"statusCode": 200, "body": "Game cancelled"}
+
+    if upcoming_status != "OPEN":
+        logger.warning(
+            "No open game found (status=%s), ignoring email from %s",
+            upcoming_status, sender_email,
+        )
         send_email(
             sender_email,
             "Re: " + subject,
@@ -154,7 +174,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return {"statusCode": 200, "body": "No open game"}
 
-    game_date = open_game["gameDate"]
+    game_date = upcoming_game["gameDate"]
 
     # Get current roster and find player's current status
     roster = get_roster(game_date)
