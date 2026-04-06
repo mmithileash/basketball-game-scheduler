@@ -31,15 +31,22 @@ def _build_roster_context(roster: dict[str, Any]) -> str:
     """Build a human-readable roster summary for the LLM context."""
     lines: list[str] = []
     for status in ("YES", "NO", "MAYBE"):
-        players = roster.get(status, {})
-        if players:
+        data = roster.get(status, {})
+        if isinstance(data, dict):
+            players = data.get("players", {})
+            guests = data.get("guests", [])
+        else:
+            # Legacy shape fallback (email-keyed dict)
+            players = data
+            guests = []
+
+        if players or guests:
             lines.append(f"{status}:")
-            for email, data in players.items():
-                guests = data.get("guests", [])
-                if guests:
-                    lines.append(f"  - {email} (+ guests: {', '.join(guests)})")
-                else:
-                    lines.append(f"  - {email}")
+            for email, pdata in players.items():
+                name = pdata.get("name") or email
+                lines.append(f"  - {name} ({email})")
+            for g in guests:
+                lines.append(f"  + Guest: {g['name']} (sponsor: {g.get('sponsorEmail', '')})")
         else:
             lines.append(f"{status}: (none)")
     return "\n".join(lines)
@@ -53,9 +60,9 @@ def parse_player_email(
     """Use Bedrock Claude to parse a player's email reply into a structured intent.
 
     Returns: {
-        "intent": str,  # JOIN, DECLINE, MAYBE, BRING_GUESTS, QUERY_ROSTER, QUERY_PLAYER, UPDATE_GUESTS
-        "guest_count": int,
-        "guest_names": list[str],
+        "intent": str,  # JOIN, DECLINE, MAYBE, BRING_GUESTS, UPDATE_GUESTS, QUERY_ROSTER, QUERY_PLAYER, GUEST_CONFIRM, GUEST_DECLINE
+        "guests": list[{name, contact_email}],
+        "confirmed_guest_names": list[str],
         "query_target": str | None,
         "reply_draft": str,
     }
@@ -75,22 +82,27 @@ def parse_player_email(
         "- DECLINE: Player cannot play (e.g., 'Can't make it', 'No', 'Out')\n"
         "- MAYBE: Player is uncertain (e.g., 'Maybe', 'Not sure yet')\n"
         "- BRING_GUESTS: Player is joining AND bringing guests "
-        "(e.g., 'I'm in, bringing 2 friends: John, Jane')\n"
+        "(e.g., 'I'm in, bringing John and Jane')\n"
+        "- UPDATE_GUESTS: Player already YES but wants to change their guest list\n"
         "- QUERY_ROSTER: Player wants to know the full roster/status\n"
         "- QUERY_PLAYER: Player asks about a specific person\n"
-        "- UPDATE_GUESTS: Player already confirmed YES but wants to update their guest list\n\n"
+        "- GUEST_CONFIRM: Player previously declined but is confirming some/all of their "
+        "guests are still attending (e.g., 'John is still coming')\n"
+        "- GUEST_DECLINE: Player previously declined and their guests are also not coming\n\n"
         "Respond with ONLY a JSON object (no markdown, no explanation):\n"
         '{{\n'
         '  "intent": "...",\n'
-        '  "guest_count": 0,\n'
-        '  "guest_names": [],\n'
+        '  "guests": [{{"name": "...", "contact_email": null}}],\n'
+        '  "confirmed_guest_names": [],\n'
         '  "query_target": null,\n'
         '  "reply_draft": "A friendly reply to send back to the player"\n'
         '}}\n\n'
-        "For BRING_GUESTS or UPDATE_GUESTS, extract guest names and count.\n"
+        "For BRING_GUESTS or UPDATE_GUESTS: populate 'guests' with each guest's name and "
+        "their contact email if provided (null otherwise).\n"
+        "For GUEST_CONFIRM: populate 'confirmed_guest_names' with the names of guests "
+        "the sponsor confirmed are still attending.\n"
         "For QUERY_PLAYER, set query_target to the email or name being asked about.\n"
-        "The reply_draft should be a brief, friendly response acknowledging "
-        "their message and confirming what action was taken."
+        "The reply_draft should be a brief, friendly response confirming the action taken."
     ).format(sender_email=sender_email, roster_context=roster_context)
 
     request_body = {
@@ -122,8 +134,8 @@ def parse_player_email(
         # Ensure all expected fields are present with defaults
         parsed: dict[str, Any] = {
             "intent": result.get("intent", "MAYBE"),
-            "guest_count": result.get("guest_count", 0),
-            "guest_names": result.get("guest_names", []),
+            "guests": result.get("guests", []),
+            "confirmed_guest_names": result.get("confirmed_guest_names", []),
             "query_target": result.get("query_target"),
             "reply_draft": result.get(
                 "reply_draft", "Thanks for your reply! We've noted your response."
@@ -139,8 +151,8 @@ def parse_player_email(
         logger.error("Failed to parse Bedrock response as JSON: %s", e)
         return {
             "intent": "MAYBE",
-            "guest_count": 0,
-            "guest_names": [],
+            "guests": [],
+            "confirmed_guest_names": [],
             "query_target": None,
             "reply_draft": (
                 "Thanks for your reply! I had a little trouble understanding "
@@ -152,8 +164,8 @@ def parse_player_email(
         logger.error("Error calling Bedrock: %s", e, exc_info=True)
         return {
             "intent": "MAYBE",
-            "guest_count": 0,
-            "guest_names": [],
+            "guests": [],
+            "confirmed_guest_names": [],
             "query_target": None,
             "reply_draft": (
                 "Thanks for your reply! I had some trouble processing your "

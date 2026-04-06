@@ -7,13 +7,13 @@ from moto import mock_aws
 from common.bedrock_client import parse_player_email
 
 
-def _make_bedrock_response(intent, guest_count=0, guest_names=None, query_target=None,
+def _make_bedrock_response(intent, guests=None, confirmed_guest_names=None, query_target=None,
                            reply_draft="Got it!"):
     """Build a mock Bedrock invoke_model response."""
     result = {
         "intent": intent,
-        "guest_count": guest_count,
-        "guest_names": guest_names or [],
+        "guests": guests or [],
+        "confirmed_guest_names": confirmed_guest_names or [],
         "query_target": query_target,
         "reply_draft": reply_draft,
     }
@@ -59,7 +59,7 @@ def test_parse_bring_guests(mocker, empty_roster):
     """Mock 'I'll bring 2 friends Mike and Sarah', verify BRING_GUESTS with guests."""
     mock_client = mocker.MagicMock()
     mock_client.invoke_model.return_value = _make_bedrock_response(
-        "BRING_GUESTS", guest_count=2, guest_names=["Mike", "Sarah"]
+        "BRING_GUESTS", guests=[{"name": "Mike", "contact_email": None}, {"name": "Sarah", "contact_email": None}]
     )
     mocker.patch("common.bedrock_client._get_bedrock_client", return_value=mock_client)
 
@@ -68,8 +68,7 @@ def test_parse_bring_guests(mocker, empty_roster):
     )
 
     assert result["intent"] == "BRING_GUESTS"
-    assert result["guest_count"] == 2
-    assert result["guest_names"] == ["Mike", "Sarah"]
+    assert result["guests"] == [{"name": "Mike", "contact_email": None}, {"name": "Sarah", "contact_email": None}]
 
 
 @pytest.mark.unit
@@ -109,8 +108,8 @@ def test_parse_error_fallback(mocker, empty_roster):
     result = parse_player_email("I'm in!", "player@example.com", empty_roster)
 
     assert result["intent"] == "MAYBE"
-    assert result["guest_count"] == 0
-    assert result["guest_names"] == []
+    assert result["guests"] == []
+    assert result["confirmed_guest_names"] == []
     assert "trouble" in result["reply_draft"].lower()
 
 
@@ -127,3 +126,44 @@ def test_parse_json_decode_error_fallback(mocker, empty_roster):
 
     assert result["intent"] == "MAYBE"
     assert "trouble" in result["reply_draft"].lower()
+
+
+@pytest.mark.unit
+def test_parse_player_email_bring_guests_new_schema(mocker, empty_roster):
+    """BRING_GUESTS returns guests as list of {name, contact_email} objects."""
+    mock_client = mocker.MagicMock()
+    mock_client.invoke_model.return_value = _make_bedrock_response(
+        "BRING_GUESTS",
+        guests=[
+            {"name": "John", "contact_email": "john@example.com"},
+            {"name": "Jane", "contact_email": None},
+        ],
+    )
+    mocker.patch("common.bedrock_client._get_bedrock_client", return_value=mock_client)
+
+    result = parse_player_email(
+        "I'm in, bringing John (john@example.com) and Jane", "alice@example.com", empty_roster
+    )
+
+    assert result["intent"] == "BRING_GUESTS"
+    assert len(result["guests"]) == 2
+    assert result["guests"][0] == {"name": "John", "contact_email": "john@example.com"}
+    assert result["guests"][1] == {"name": "Jane", "contact_email": None}
+    assert result["confirmed_guest_names"] == []
+
+
+@pytest.mark.unit
+def test_parse_player_email_guest_confirm(mocker, empty_roster):
+    """GUEST_CONFIRM returns confirmed_guest_names."""
+    mock_client = mocker.MagicMock()
+    mock_client.invoke_model.return_value = _make_bedrock_response(
+        "GUEST_CONFIRM",
+        confirmed_guest_names=["John"],
+    )
+    mocker.patch("common.bedrock_client._get_bedrock_client", return_value=mock_client)
+
+    result = parse_player_email("John is still coming", "alice@example.com", empty_roster)
+
+    assert result["intent"] == "GUEST_CONFIRM"
+    assert result["confirmed_guest_names"] == ["John"]
+    assert result["guests"] == []
