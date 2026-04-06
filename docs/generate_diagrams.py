@@ -38,11 +38,13 @@ def diagram_1_component_architecture():
             with Cluster("Scheduling"):
                 eb_mon = Eventbridge("EventBridge\nMonday 9AM")
                 eb_wf = Eventbridge("EventBridge\nWed & Fri 9AM")
+                eb_sat = Eventbridge("EventBridge\nSaturday 1PM UTC")
 
             with Cluster("Compute"):
                 fn_announce = Lambda("announcement\n-sender")
                 fn_email = Lambda("email\n-processor")
                 fn_remind = Lambda("reminder\n-checker")
+                fn_finalize = Lambda("game\n-finalizer")
 
             with Cluster("Storage"):
                 dynamo = Dynamodb("DynamoDB\nPlayers / Games / RSVPs")
@@ -57,6 +59,7 @@ def diagram_1_component_architecture():
         # Scheduling triggers
         eb_mon >> Edge(label="trigger") >> fn_announce
         eb_wf >> Edge(label="trigger") >> fn_remind
+        eb_sat >> Edge(label="trigger") >> fn_finalize
 
         # Announcement sender
         fn_announce >> Edge(label="create game\n+ read players") >> dynamo
@@ -65,6 +68,9 @@ def diagram_1_component_architecture():
         # Reminder checker
         fn_remind >> Edge(label="check RSVPs") >> dynamo
         fn_remind >> Edge(label="send reminders") >> ses_out
+
+        # Game finalizer
+        fn_finalize >> Edge(label="OPEN → PLAYED") >> dynamo
 
         # Inbound email flow
         domain >> Edge(label="MX") >> ses_in
@@ -176,9 +182,37 @@ def diagram_4_reminder_flow():
 
 
 # ──────────────────────────────────────────────
-# Diagram 5 — Data Model
+# Diagram 5 — Game Finalisation Flow
 # ──────────────────────────────────────────────
-def diagram_5_data_model():
+def diagram_5_game_finalizer_flow():
+    with Diagram(
+        "Game Finalisation Flow",
+        filename=os.path.join(OUTPUT_DIR, "05_game_finalizer_flow"),
+        show=False,
+        direction="LR",
+        graph_attr={"fontsize": "14", "bgcolor": "white", "pad": "0.5"},
+    ):
+        eb = Eventbridge("EventBridge\nSaturday 1PM UTC")
+        fn = Lambda("game\n-finalizer")
+        dynamo = Dynamodb("DynamoDB")
+
+        eb >> Edge(label="1. trigger") >> fn
+        fn >> Edge(label="2. getGameStatus(today)") >> dynamo
+        fn >> Edge(
+            label="3. if OPEN → PLAYED",
+            color="green",
+        ) >> dynamo
+        fn >> Edge(
+            label="3. if CANCELLED/PLAYED\n→ no-op",
+            style="dashed",
+            color="gray",
+        ) >> dynamo
+
+
+# ──────────────────────────────────────────────
+# Diagram 6 — Data Model
+# ──────────────────────────────────────────────
+def diagram_6_data_model():
     """Uses graphviz directly to draw the two-table DynamoDB data model."""
     import graphviz
 
@@ -232,19 +266,21 @@ def diagram_5_data_model():
              penwidth="2", style="dashed")
     dot.edge("games", "examples", label="", style="dotted", color="#b58900", arrowhead="none")
 
-    output_path = os.path.join(OUTPUT_DIR, "05_data_model")
+    output_path = os.path.join(OUTPUT_DIR, "06_data_model")
     dot.render(output_path, cleanup=True)
 
 
 if __name__ == "__main__":
-    print("Generating diagram 1/5 — Component Architecture...")
+    print("Generating diagram 1/6 — Component Architecture...")
     diagram_1_component_architecture()
-    print("Generating diagram 2/5 — Monday Announcement Flow...")
+    print("Generating diagram 2/6 — Monday Announcement Flow...")
     diagram_2_announcement_flow()
-    print("Generating diagram 3/5 — Player Reply Processing...")
+    print("Generating diagram 3/6 — Player Reply Processing...")
     diagram_3_email_processing()
-    print("Generating diagram 4/5 — Reminder & Cancellation Flow...")
+    print("Generating diagram 4/6 — Reminder & Cancellation Flow...")
     diagram_4_reminder_flow()
-    print("Generating diagram 5/5 — Data Model...")
-    diagram_5_data_model()
+    print("Generating diagram 5/6 — Game Finalisation Flow...")
+    diagram_5_game_finalizer_flow()
+    print("Generating diagram 6/6 — Data Model...")
+    diagram_6_data_model()
     print(f"\nDone! All PNGs saved to {OUTPUT_DIR}/")

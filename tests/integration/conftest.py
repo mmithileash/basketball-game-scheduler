@@ -24,6 +24,7 @@ LAMBDA_HANDLER_CONFIGS = {
     "announcement_sender": "handler.handler",
     "email_processor": "handler.handler",
     "reminder_checker": "handler.handler",
+    "game_finalizer": "handler.handler",
 }
 
 
