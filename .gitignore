@@ -6,3 +6,5 @@ terraform.tfstate.backup
 .build/
 .claude/*
 .venv/*
+__pycache__/
+*.pyc
