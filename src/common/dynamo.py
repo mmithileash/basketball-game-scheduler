@@ -249,15 +249,26 @@ def _next_saturday(today: date) -> date:
     return today + timedelta(days=days_ahead)
 
 
-def get_current_open_game() -> dict[str, Any] | None:
-    """Get the open game for the upcoming Saturday via a direct point read."""
+def get_upcoming_game() -> dict[str, Any] | None:
+    """Get the gameStatus item for the upcoming Saturday regardless of status.
+
+    Returns the raw game record (with the ``status`` field intact, e.g. OPEN /
+    CANCELLED / PLAYED) or None if no record exists for that date. Callers that
+    only want games still accepting RSVPs should use ``get_current_open_game``
+    instead; callers that need to react differently to a cancelled game (e.g.
+    the email processor) should use this function and branch on ``status``.
+    """
     saturday = _next_saturday(date.today())
-    game_date = saturday.isoformat()
-    item = get_game_status(game_date)
+    return get_game_status(saturday.isoformat())
+
+
+def get_current_open_game() -> dict[str, Any] | None:
+    """Get the open game for the upcoming Saturday, or None if it isn't OPEN."""
+    item = get_upcoming_game()
     if item and item.get("status") == "OPEN":
-        logger.info(f"Current open game: {game_date}")
+        logger.info(f"Current open game: {item['gameDate']}")
         return item
-    logger.info(f"No open game found for upcoming Saturday {game_date}")
+    logger.info("No open game found for upcoming Saturday")
     return None
 
 
