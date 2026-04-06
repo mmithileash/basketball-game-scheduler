@@ -86,29 +86,66 @@ You can also ask "who's playing?" at any time.
 7. **Bedrock returns** a structured response:
    ```json
    {
-     "intent": "JOIN | DECLINE | BRING_GUESTS | QUERY_ROSTER | QUERY_PLAYER",
-     "guestCount": 0,
+     "intent": "JOIN | DECLINE | MAYBE | BRING_GUESTS | UPDATE_GUESTS | QUERY_ROSTER | QUERY_PLAYER | GUEST_CONFIRM | GUEST_DECLINE",
+     "guests": [{"name": "John", "contact_email": "john@example.com"}],
+     "confirmed_guest_names": [],
      "queryTarget": null,
      "replyDraft": "You're confirmed! So far we have 8 players..."
    }
    ```
-8. Lambda **updates DynamoDB** based on the intent (e.g., sets RSVP to CONFIRMED, adds guest count)
+8. Lambda **updates DynamoDB** based on the intent (see table below)
 9. Lambda **sends the reply** back to the player via SES
 
 ### Supported intents
 
 | Player says | Intent | System action |
 |---|---|---|
-| "I'm in!" / "Count me in" | `JOIN` | Mark RSVP as CONFIRMED, reply with current headcount |
-| "Can't make it" / "I'm out" | `DECLINE` | Mark RSVP as DECLINED, reply with acknowledgement |
-| "I'll bring 2 friends" | `BRING_GUESTS` | Mark CONFIRMED + set `guestCount = 2`, reply with updated total |
-| "Who's playing so far?" | `QUERY_ROSTER` | Reply with full list of confirmed players and guest counts |
-| "Is Sarah coming?" | `QUERY_PLAYER` | Look up player by name, reply with their RSVP status |
-| "Change to 3 guests" | `UPDATE_GUESTS` | Update guest count, reply confirming change |
+| "I'm in!" / "Count me in" | `JOIN` | Move player to `playerStatus#YES`, reply with current headcount |
+| "Can't make it" / "I'm out" | `DECLINE` | Move player to `playerStatus#NO`; if player had guests, move guests to `playerStatus#NO` guests array and send follow-up |
+| "Maybe" / "Not sure yet" | `MAYBE` | Move player to `playerStatus#MAYBE` |
+| "I'll bring John and Jane" | `BRING_GUESTS` | Move player to YES; create guest entries in Players table; add guests to `playerStatus#YES` guests array |
+| "Change to 3 guests" | `UPDATE_GUESTS` | Delete old guest Players entries and YES guests array entries; create new ones |
+| "Who's playing so far?" | `QUERY_ROSTER` | Reply with full roster — no DynamoDB update |
+| "Is Sarah coming?" | `QUERY_PLAYER` | Look up player by name/email, reply with their status — no DynamoDB update |
+| "John is still coming" *(after cancelling)* | `GUEST_CONFIRM` | Move named guests from `playerStatus#NO` to `playerStatus#YES` guests array |
+| "Neither is coming" *(after cancelling)* | `GUEST_DECLINE` | No DynamoDB update — guests stay in `playerStatus#NO`, not counted |
 
 ### What if the intent is unclear?
 
 Bedrock will respond conversationally asking for clarification. No DynamoDB update is made — the player simply replies again and the cycle repeats.
+
+### 3.1 Guest Player Flow
+
+Guests are first-class entries — created in the Players table the moment they are declared and tracked through the same YES/NO/MAYBE status items as permanent players.
+
+```mermaid
+flowchart TD
+    A([Game announced]) --> B[Player emails intent]
+
+    B --> C{Intent?}
+
+    C -->|BRING_GUESTS| D[Create guest entries\nin Players table\nAdd to YES guests array]
+    C -->|UPDATE_GUESTS\nplayer already YES| E[Delete old guest Players entries\nCreate new guest Players entries\nReplace YES guests array]
+    C -->|DECLINE\nplayer had guests| F[Move player → NO players map\nMove guests → NO guests array\nSend follow-up email to sponsor]
+
+    D --> G([Guests in YES — counted])
+    E --> G
+
+    F --> H{Sponsor replies\nbefore Friday?}
+
+    H -->|GUEST_CONFIRM\nnaming specific guests| I[Move named guests\nNO → YES guests array]
+    H -->|GUEST_DECLINE\nor no reply| J([Guests stay in NO — not counted])
+
+    I --> K([Confirmed guests in YES — counted\nUnconfirmed guests in NO — not counted])
+
+    G --> L([game_finalizer: PLAYED])
+    J --> L
+    K --> L
+
+    L --> M[Delete all guest entries\nfrom Players table]
+```
+
+All guest communication goes through the sponsoring player's email address. Guests never receive emails directly.
 
 ---
 
@@ -173,10 +210,12 @@ See you next week!
 
 | Game status | Action |
 |---|---|
-| `OPEN` | Update status to `PLAYED` |
+| `OPEN` | Update status to `PLAYED`, then clean up guest Players entries |
 | `CANCELLED` | No-op — cancelled games are never marked as played |
 | `PLAYED` | No-op — already finalised |
 | Not found | No-op — no game scheduled this week |
+
+5. After marking `PLAYED`, Lambda reads the `guests` array from `playerStatus#YES`, `playerStatus#NO`, and `playerStatus#MAYBE`, then **deletes each guest entry from the Players table** using the stored `{pk, sk}` pairs. Guest cleanup is best-effort — a failure here is logged and does not prevent the game from being marked `PLAYED`.
 
 ---
 
@@ -186,13 +225,24 @@ See you next week!
 
 ### Two tables, no GSIs
 
-**Table 1: `Players`** — player profiles, keyed by email with active status as sort key
+**Table 1: `Players`** — player profiles and per-game guest entries, keyed by email + active status
 
 | Attribute | Key | Type | Description |
 |---|---|---|---|
-| `email` | **PK** | String | Player's email address — the natural unique identifier |
-| `active` | **SK** | String | `true` / `false` — enables direct query for active players |
-| `name` | — | String (nullable) | Display name — may be empty if only email was provided |
+| `email` | **PK** | String | Player's email address, or sponsor's email for nameless guests |
+| `active` | **SK** | String | `true` for permanent players; `guest#active` or `guest#active#<name>` for guests |
+| `name` | — | String (nullable) | Display name |
+| `sponsorEmail` | — | String | Sponsor's email — guest entries only |
+| `gameDate` | — | String | Game the guest was created for — guest entries only |
+
+Guest SK patterns:
+
+| Scenario | PK | SK |
+|---|---|---|
+| Guest with contact email | `<contactEmail>` | `guest#active` |
+| Guest without contact email | `<sponsorEmail>` | `guest#active#<guestName>` |
+
+Guest entries are created on `BRING_GUESTS`/`UPDATE_GUESTS` and deleted by `game_finalizer` after `PLAYED`. They are invisible to `get_active_players()` because that query filters on `active = "true"`.
 
 **Table 2: `Games`** — game state + RSVPs in a single table
 
@@ -200,31 +250,43 @@ See you next week!
 |---|---|---|---|
 | `gameDate` | **PK** | String | Game date in `YYYY-MM-DD` format |
 | `sk` | **SK** | String | `gameStatus` / `playerStatus#YES` / `playerStatus#NO` / `playerStatus#MAYBE` |
-| `players` | — | Map | Map of `{email: {guests: [name, ...]}}` — only on `playerStatus#*` items |
+| `players` | — | Map | Map of `{email: {name: str}}` — permanent players only, on `playerStatus#*` items |
+| `guests` | — | List | Flat list of `{pk, sk, name, sponsorEmail, sponsorName}` objects — on `playerStatus#*` items |
 | `status` | — | String | `OPEN` / `CANCELLED` / `PLAYED` — only on `SK = gameStatus` item |
 | `createdAt` | — | String | ISO 8601 timestamp — only on `SK = gameStatus` item |
 
-### Example items in the Games table
+### Example `playerStatus#YES` item
 
-| PK (gameDate) | SK | players | status | createdAt |
-|---|---|---|---|---|
-| `2026-03-28` | `gameStatus` | — | `OPEN` | `2026-03-23T09:00:00Z` |
-| `2026-03-28` | `playerStatus#YES` | `{"john@mail.com": {"guests": ["Mike", "Sarah"]}, "jane@mail.com": {"guests": []}}` | — | — |
-| `2026-03-28` | `playerStatus#NO` | `{"bob@mail.com": {}}` | — | — |
-| `2026-03-28` | `playerStatus#MAYBE` | `{"alice@mail.com": {"guests": ["Tom"]}}` | — | — |
+```json
+{
+  "gameDate": "2026-04-05",
+  "sk": "playerStatus#YES",
+  "players": {
+    "alice@example.com": {"name": "Alice"},
+    "bob@example.com": {"name": "Bob"}
+  },
+  "guests": [
+    {"pk": "john@example.com", "sk": "guest#active", "name": "John", "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+    {"pk": "alice@example.com", "sk": "guest#active#Jane", "name": "Jane", "sponsorEmail": "alice@example.com", "sponsorName": "Alice"}
+  ]
+}
+```
+
+The `guests` array is a flat list across all sponsors. `pk`+`sk` uniquely identify the guest's Players table entry and serve as the cleanup index for `game_finalizer`. `sponsorEmail` links each guest back to their sponsor for follow-up filtering.
 
 ### Access patterns
 
 | Query | Table | Operation |
 |---|---|---|
-| Get all active players | Players | Scan with filter `SK = true` (or GSI on `active` if needed at scale) |
+| Get all active players | Players | Scan with filter `active = "true"` |
 | Get game status | Games | GetItem `PK = gameDate, SK = gameStatus` |
-| Get all YES players for a game | Games | GetItem `PK = gameDate, SK = playerStatus#YES` → read `players` map |
 | Get full roster (all responses) | Games | Query `PK = gameDate, SK begins_with playerStatus#` → returns 3 items |
-| Check if specific player responded | Games | Query `PK = gameDate, SK begins_with playerStatus#` → check if email exists in any `players` map |
-| Count confirmed (incl. guests) | Games | GetItem `PK = gameDate, SK = playerStatus#YES` → count map keys + sum guest arrays |
-| Player changes response (YES → NO) | Games | **TransactWriteItems**: REMOVE from `playerStatus#YES.players.#email` + SET `playerStatus#NO.players.#email = :value` |
-| Get pending players (haven't responded) | Both | Get all active players from Players, get all emails from `playerStatus#*` maps in Games, diff the sets |
+| Count confirmed (incl. guests) | Games | GetItem `PK = gameDate, SK = playerStatus#YES` → `len(players) + len(guests)` |
+| Player changes response (YES → NO) | Games | **TransactWriteItems**: REMOVE from `playerStatus#YES.players.#email` + SET `playerStatus#NO.players.#email` |
+| Move guests on player decline | Games | Read YES guests, filter by `sponsorEmail`, write remaining back to YES, append to NO guests array |
+| Move confirmed guests (NO → YES) | Games | **TransactWriteItems**: filter NO guests by name+sponsor, write remaining to NO, append matches to YES |
+| Get pending players | Both | Get all active players from Players, diff against emails in all `playerStatus#*` players maps |
+| Clean up guests after game | Both | Read `guests` arrays from YES/NO/MAYBE; batch delete from Players by `{pk, sk}` |
 
 > **Future optimisation:** Add a `playerStatus#PENDING` SK item, pre-populated with all active players when the game is created. As players respond, the existing TransactWriteItems would also REMOVE from PENDING. This turns the current two-table diff into a single GetItem. Not needed at launch — the diff approach is fine for 100 players — but can be added later without schema changes.
 
