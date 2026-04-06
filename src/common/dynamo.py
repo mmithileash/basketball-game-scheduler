@@ -249,18 +249,6 @@ def _next_saturday(today: date) -> date:
     return today + timedelta(days=days_ahead)
 
 
-def get_current_open_game() -> dict[str, Any] | None:
-    """Get the open game for the upcoming Saturday via a direct point read."""
-    saturday = _next_saturday(date.today())
-    game_date = saturday.isoformat()
-    item = get_game_status(game_date)
-    if item and item.get("status") == "OPEN":
-        logger.info(f"Current open game: {game_date}")
-        return item
-    logger.info(f"No open game found for upcoming Saturday {game_date}")
-    return None
-
-
 def get_upcoming_game() -> dict[str, Any] | None:
     """Get the gameStatus item for the upcoming Saturday regardless of status.
 
@@ -271,8 +259,17 @@ def get_upcoming_game() -> dict[str, Any] | None:
     the email processor) should use this function and branch on ``status``.
     """
     saturday = _next_saturday(date.today())
-    game_date = saturday.isoformat()
-    return get_game_status(game_date)
+    return get_game_status(saturday.isoformat())
+
+
+def get_current_open_game() -> dict[str, Any] | None:
+    """Get the open game for the upcoming Saturday, or None if it isn't OPEN."""
+    item = get_upcoming_game()
+    if item and item.get("status") == "OPEN":
+        logger.info(f"Current open game: {item['gameDate']}")
+        return item
+    logger.info("No open game found for upcoming Saturday")
+    return None
 
 
 def get_pending_players(game_date: str) -> list[dict[str, Any]]:

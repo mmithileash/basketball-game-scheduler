@@ -4,9 +4,7 @@ from datetime import date
 from email.mime.text import MIMEText
 from unittest.mock import MagicMock
 
-import boto3
 import pytest
-from moto import mock_aws
 
 from email_processor.handler import handler, _extract_email_body, _extract_sender_email
 
@@ -157,60 +155,23 @@ def test_handler_query_roster(mocker):
 
 
 @pytest.mark.unit
-@mock_aws
-def test_handler_cancelled_game_response(mocker):
-    """Player replies to a CANCELLED game: handler must NOT include the
-    roster of players going to the game in the reply, and must NOT update
-    any RSVP state. This exercises the real get_current_open_game path
-    against a moto-backed DynamoDB so the OPEN-status filter is covered
-    end-to-end at the handler layer.
+def test_handler_cancelled_game_response(mocker, dynamodb_tables):
+    """Player replies to a CANCELLED game with a JOIN-style message: handler
+    must reply with the cancellation message, write no RSVP state, and leak
+    no roster. Exercises the real get_upcoming_game -> get_game_status path
+    against a moto-backed DynamoDB.
     """
-    # --- Set up moto-backed DynamoDB tables ---
-    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
-    dynamodb.create_table(
-        TableName="test-players",
-        KeySchema=[
-            {"AttributeName": "email", "KeyType": "HASH"},
-            {"AttributeName": "active", "KeyType": "RANGE"},
-        ],
-        AttributeDefinitions=[
-            {"AttributeName": "email", "AttributeType": "S"},
-            {"AttributeName": "active", "AttributeType": "S"},
-        ],
-        BillingMode="PAY_PER_REQUEST",
-    )
-    dynamodb.create_table(
-        TableName="test-games",
-        KeySchema=[
-            {"AttributeName": "gameDate", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        AttributeDefinitions=[
-            {"AttributeName": "gameDate", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-        ],
-        BillingMode="PAY_PER_REQUEST",
-    )
-
-    # Reset cached boto3 clients/resources so they bind to moto
-    import common.dynamo as dynamo_mod
-    dynamo_mod._config = None
-    dynamo_mod._dynamodb = None
-    dynamo_mod._client = None
-
-    # --- Pin "today" so the upcoming Saturday is deterministic ---
+    # Pin "today" so _next_saturday() resolves to the seeded game date.
     fake_today = date(2026, 4, 8)  # Wednesday
     fake_saturday = "2026-04-11"
     mocker.patch("common.dynamo.date", wraps=date).today.return_value = fake_today
 
-    # --- Seed an upcoming-Saturday game with confirmed players, then cancel it ---
     from common.dynamo import create_game, update_game_status, update_player_response
     create_game(fake_saturday)
     update_player_response(fake_saturday, "alice@example.com", "YES", name="Alice")
     update_player_response(fake_saturday, "bob@example.com", "YES", name="Bob")
     update_game_status(fake_saturday, "CANCELLED")
 
-    # --- Mock S3 fetch of the inbound email ---
     raw_email = _make_raw_email(
         "charlie@example.com", "Re: Basketball Game", "I'm in!"
     )
@@ -218,30 +179,23 @@ def test_handler_cancelled_game_response(mocker):
     mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
     mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
 
-    # parse_player_email and update_player_response must NOT be called for a
-    # cancelled game — patch them so we can assert that.
     mock_parse = mocker.patch("email_processor.handler.parse_player_email")
     mock_update = mocker.patch("email_processor.handler.update_player_response")
     mock_send = mocker.patch("email_processor.handler.send_email")
 
-    # --- Act ---
     result = handler(_make_s3_event(), None)
 
-    # --- Assert: short-circuit, no Bedrock call, no RSVP write ---
     assert result["statusCode"] == 200
     assert result["body"] == "Game cancelled"
     mock_parse.assert_not_called()
     mock_update.assert_not_called()
 
-    # --- Assert: reply explicitly mentions the cancellation, names the date,
-    #     and contains NO roster / player names ---
     mock_send.assert_called_once()
     to_addr, subject, body = mock_send.call_args[0]
     assert to_addr == "charlie@example.com"
     assert "Re:" in subject
     assert "cancelled" in body.lower()
-    assert fake_saturday in body  # cancellation message must name the game date
-    # The reply must not leak the roster of players going to the game
+    assert fake_saturday in body
     assert "Alice" not in body
     assert "Bob" not in body
     assert "alice@example.com" not in body
