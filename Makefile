@@ -37,6 +37,7 @@ package:
 		mkdir -p $(BUILD_DIR)/$$fn; \
 		cp -r src/common $(BUILD_DIR)/$$fn/common; \
 		cp -r src/$$fn/* $(BUILD_DIR)/$$fn/; \
+		pip install -r requirements-runtime.txt -t $(BUILD_DIR)/$$fn --quiet; \
 		cd $(BUILD_DIR)/$$fn && zip -r ../$$fn.zip . && cd ../..; \
 		rm -rf $(BUILD_DIR)/$$fn; \
 		echo "Created $(BUILD_DIR)/$$fn.zip"; \
