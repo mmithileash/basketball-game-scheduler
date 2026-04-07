@@ -1,6 +1,7 @@
 import email
 import logging
 from email import policy
+from html.parser import HTMLParser
 from typing import Any
 
 import boto3
@@ -31,6 +32,38 @@ def _get_s3_client():
     if _s3_client is None:
         _s3_client = boto3.client("s3")
     return _s3_client
+
+
+class _HTMLToText(HTMLParser):
+    """Minimal HTML-to-text converter.
+
+    Turns block-level tags into line breaks so that downstream line-based
+    quote-stripping (EmailReplyParser) can see quote markers that originated
+    as <blockquote>, <div>, etc.
+    """
+
+    _BLOCK_TAGS = frozenset({"br", "p", "div", "blockquote", "li", "tr"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self._chunks.append(data)
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def get_text(self) -> str:
+        return "".join(self._chunks)
+
+
+def _html_to_text(html: str) -> str:
+    """Convert an HTML string to plain text, inserting newlines at block tags."""
+    parser = _HTMLToText()
+    parser.feed(html)
+    return parser.get_text()
 
 
 def _extract_email_body(msg: email.message.Message) -> str:

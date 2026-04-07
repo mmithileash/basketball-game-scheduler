@@ -434,3 +434,28 @@ def test_guest_confirm_with_no_confirmed_names_does_not_move_guests():
     sent_body = mock_send.call_args[0][2]
     assert "attending: ." not in sent_body
     assert "We've noted your message about your guests." in sent_body
+
+
+@pytest.mark.unit
+def test_html_to_text_inserts_newlines_at_block_tags():
+    """_html_to_text turns block-level tags into line breaks so that
+    EmailReplyParser's line-based heuristics can later see quote markers
+    that originated as <blockquote> elements.
+    """
+    from email_processor.handler import _html_to_text
+
+    html = (
+        '<div>I\'m in!</div>'
+        '<div class="gmail_quote">'
+        '<div>On Mon, Apr 8, 2026, Scheduler &lt;scheduler@example.com&gt; wrote:</div>'
+        '<blockquote>Are you playing this Saturday?</blockquote>'
+        '</div>'
+    )
+    text = _html_to_text(html)
+
+    assert "I'm in!" in text
+    assert "On Mon, Apr 8, 2026, Scheduler <scheduler@example.com> wrote:" in text
+    assert "Are you playing this Saturday?" in text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    assert "I'm in!" in lines
+    assert "Are you playing this Saturday?" in lines
