@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 import boto3
+from email_reply_parser import EmailReplyParser
 
 from common.bedrock_client import parse_player_email
 from common.config import load_config
@@ -66,8 +67,14 @@ def _html_to_text(html: str) -> str:
     return parser.get_text()
 
 
-def _extract_email_body(msg: email.message.Message) -> str:
-    """Extract plain text body from an email message."""
+def _extract_text_payload(msg: email.message.Message) -> str:
+    """Extract the most appropriate text body from an email message.
+
+    Prefers a text/plain part if one exists. Otherwise, falls back to the
+    text/html part and converts it to plain text via _html_to_text so that
+    downstream line-based quote-stripping has something to work with.
+    Returns an empty string if no usable body part is found.
+    """
     if msg.is_multipart():
         for part in msg.walk():
             content_type = part.get_content_type()
@@ -76,17 +83,31 @@ def _extract_email_body(msg: email.message.Message) -> str:
                 payload = part.get_payload(decode=True)
                 if payload:
                     return payload.decode("utf-8", errors="replace")
-        # Fallback: try HTML if no plain text found
         for part in msg.walk():
             if part.get_content_type() == "text/html":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    return payload.decode("utf-8", errors="replace")
+                    return _html_to_text(payload.decode("utf-8", errors="replace"))
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            return payload.decode("utf-8", errors="replace")
+            text = payload.decode("utf-8", errors="replace")
+            if msg.get_content_type() == "text/html":
+                return _html_to_text(text)
+            return text
     return ""
+
+
+def _extract_email_body(msg: email.message.Message) -> str:
+    """Extract just the player's new reply, with quoted history stripped.
+
+    Pulls the most appropriate text body out of the message and runs it
+    through email-reply-parser, which removes prior-message quoting (>,
+    "On ... wrote:", "-----Original Message-----", etc.). Returns an empty
+    string if the player wrote nothing new (e.g. a pure forward) — that
+    flows through to Bedrock the same as any other empty reply.
+    """
+    return EmailReplyParser.parse_reply(_extract_text_payload(msg))
 
 
 def _extract_sender_email(from_header: str) -> str:
