@@ -37,6 +37,7 @@ resource "null_resource" "build_announcement_sender" {
       mkdir -p ${path.module}/.build/announcement_sender
       cp -r ${path.module}/../src/common ${path.module}/.build/announcement_sender/common
       cp -r ${path.module}/../src/announcement_sender/* ${path.module}/.build/announcement_sender/
+      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/announcement_sender --quiet
     EOT
   }
 }
@@ -60,6 +61,7 @@ resource "null_resource" "build_email_processor" {
       mkdir -p ${path.module}/.build/email_processor
       cp -r ${path.module}/../src/common ${path.module}/.build/email_processor/common
       cp -r ${path.module}/../src/email_processor/* ${path.module}/.build/email_processor/
+      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/email_processor --quiet
     EOT
   }
 }
@@ -83,6 +85,7 @@ resource "null_resource" "build_reminder_checker" {
       mkdir -p ${path.module}/.build/reminder_checker
       cp -r ${path.module}/../src/common ${path.module}/.build/reminder_checker/common
       cp -r ${path.module}/../src/reminder_checker/* ${path.module}/.build/reminder_checker/
+      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/reminder_checker --quiet
     EOT
   }
 }
@@ -170,6 +173,7 @@ resource "null_resource" "build_game_finalizer" {
       mkdir -p ${path.module}/.build/game_finalizer
       cp -r ${path.module}/../src/common ${path.module}/.build/game_finalizer/common
       cp -r ${path.module}/../src/game_finalizer/* ${path.module}/.build/game_finalizer/
+      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_finalizer --quiet
     EOT
   }
 }
@@ -207,10 +211,10 @@ resource "aws_lambda_function" "game_finalizer" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lambda_permission" "allow_s3_invoke" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.email_processor.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.email_inbox.arn
+  statement_id   = "AllowS3Invoke"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.email_processor.function_name
+  principal      = "s3.amazonaws.com"
+  source_arn     = aws_s3_bucket.email_inbox.arn
   source_account = data.aws_caller_identity.current.account_id
 }
