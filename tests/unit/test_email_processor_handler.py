@@ -528,3 +528,117 @@ def test_guest_confirm_with_no_confirmed_names_does_not_move_guests():
     sent_body = mock_send.call_args[0][2]
     assert "attending: ." not in sent_body
     assert "We've noted your message about your guests." in sent_body
+
+
+@pytest.mark.unit
+def test_html_to_text_inserts_newlines_at_block_tags():
+    """_html_to_text turns block-level tags into line breaks so that
+    EmailReplyParser's line-based heuristics can later see quote markers
+    that originated as <blockquote> elements.
+    """
+    from email_processor.handler import _html_to_text
+
+    html = (
+        '<div>I\'m in!</div>'
+        '<div class="gmail_quote">'
+        '<div>On Mon, Apr 8, 2026, Scheduler &lt;scheduler@example.com&gt; wrote:</div>'
+        '<blockquote>Are you playing this Saturday?</blockquote>'
+        '</div>'
+    )
+    text = _html_to_text(html)
+
+    assert "I'm in!" in text
+    assert "On Mon, Apr 8, 2026, Scheduler <scheduler@example.com> wrote:" in text
+    assert "Are you playing this Saturday?" in text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    assert "I'm in!" in lines
+    assert "Are you playing this Saturday?" in lines
+
+
+@pytest.mark.unit
+def test_extract_body_strips_on_wrote_quote():
+    """A plain-text reply with an 'On ... wrote:' quoted block keeps only
+    the new content above the quote line.
+    """
+    from email_processor.handler import _extract_email_body
+
+    body = (
+        "I'm in!\n"
+        "\n"
+        "On Mon, Apr 8, 2026 at 9:00 AM, Scheduler <scheduler@example.com> wrote:\n"
+        "> Are you playing this Saturday?\n"
+        "> Reply YES to confirm."
+    )
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["From"] = "alice@example.com"
+    msg["Subject"] = "Re: Basketball Game"
+
+    import email as email_lib
+    from email import policy
+    parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
+
+    extracted = _extract_email_body(parsed)
+    assert extracted.strip() == "I'm in!"
+    assert "Scheduler" not in extracted
+    assert "Reply YES" not in extracted
+
+
+@pytest.mark.unit
+def test_extract_body_strips_gt_quoted_lines():
+    """A plain-text reply where the prior message is line-quoted with '>'
+    keeps only the user's new content.
+    """
+    from email_processor.handler import _extract_email_body
+
+    body = (
+        "Sure I'll bring 2 friends\n"
+        "\n"
+        "> On 2026-04-08, Scheduler wrote:\n"
+        "> Reminder: game on Saturday at 10 AM\n"
+        "> Bring water"
+    )
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["From"] = "alice@example.com"
+    msg["Subject"] = "Re: Basketball Game"
+
+    import email as email_lib
+    from email import policy
+    parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
+
+    extracted = _extract_email_body(parsed)
+    assert "Sure I'll bring 2 friends" in extracted
+    assert "Reminder" not in extracted
+    assert "Bring water" not in extracted
+
+
+@pytest.mark.unit
+def test_extract_body_html_fallback_strips_quotes():
+    """An HTML-only reply: the HTML is converted to text first, then
+    quoted history is stripped. The user's new content survives.
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText as MIMETextHelper
+
+    from email_processor.handler import _extract_email_body
+
+    html = (
+        '<div>I\'m in!</div>'
+        '<div class="gmail_quote">'
+        '<div>On Mon, Apr 8, 2026, Scheduler &lt;scheduler@example.com&gt; wrote:</div>'
+        '<blockquote>Are you playing this Saturday?</blockquote>'
+        '</div>'
+    )
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = "alice@example.com"
+    msg["Subject"] = "Re: Basketball Game"
+    msg.attach(MIMETextHelper(html, "html", "utf-8"))
+
+    import email as email_lib
+    from email import policy
+    parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
+
+    extracted = _extract_email_body(parsed)
+    assert "I'm in!" in extracted
+    assert "Are you playing" not in extracted
+    assert "Scheduler" not in extracted

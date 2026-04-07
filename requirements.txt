@@ -1,1 +1,2 @@
+-r requirements-runtime.txt
 boto3>=1.34.0
