@@ -51,9 +51,10 @@ Fully serverless email-based basketball game coordination system on AWS (eu-west
 
 ### Lambda Functions (`src/`)
 
-- `announcement_sender/handler.py` — Creates game + sends announcement emails
+- `announcement_sender/handler.py` — Creates game + sends announcement emails (skips if pre-cancelled by admin)
 - `email_processor/handler.py` — Parses S3-stored inbound email, calls Bedrock for NLU, updates roster, replies
 - `reminder_checker/handler.py` — Counts confirmed players; sends reminders Wed, confirms or cancels Fri
+- `admin_processor/handler.py` — Processes admin command emails (cancel game, add/deactivate/reactivate players)
 
 ### Shared Modules (`src/common/`)
 
@@ -76,11 +77,16 @@ Fully serverless email-based basketball game coordination system on AWS (eu-west
 
 Provisions: EventBridge cron rules, 3 Lambda functions, SES domain + receipt rules, S3 bucket (email storage), DynamoDB tables, Route 53 MX records, IAM roles.
 
-Key variables (set in `terraform.tfvars`): `domain_name`, `sender_email`, `game_time`, `game_location`, `bedrock_model_id`, `min_players`.
+Key variables (set in `terraform.tfvars`): `domain_name`, `sender_email`, `admin_email`, `game_time`, `game_location`, `bedrock_model_id`, `min_players`.
 
 ### Testing
 
 - **Unit tests** (`tests/unit/`) — Use `moto` to mock AWS services; no external dependencies
 - **Integration tests** (`tests/integration/`) — Use LocalStack via Docker Compose; test full end-to-end flows
 
-Python version: 3.12.13 (managed by pyenv via `.python-version`)
+#Python preferences
+- Python version: 3.12.13 (managed by pyenv via `.python-version`)
+- Use f-strings when possible
+
+
+
