@@ -69,9 +69,19 @@ resource "aws_s3_bucket_notification" "email_received" {
   lambda_function {
     lambda_function_arn = aws_lambda_function.email_processor.arn
     events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "inbound/"
   }
 
-  depends_on = [aws_lambda_permission.allow_s3_invoke]
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.admin_processor.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "admin/"
+  }
+
+  depends_on = [
+    aws_lambda_permission.allow_s3_invoke,
+    aws_lambda_permission.allow_s3_invoke_admin,
+  ]
 }
 
 data "aws_caller_identity" "current" {}
