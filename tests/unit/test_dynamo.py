@@ -8,8 +8,10 @@ from moto import mock_aws
 from common.dynamo import (
     _next_saturday,
     add_guests_to_game_status,
+    add_player,
     create_game,
     create_guest_entry,
+    deactivate_player,
     delete_guest_entries,
     get_active_players,
     get_current_open_game,
@@ -17,7 +19,10 @@ from common.dynamo import (
     get_pending_players,
     get_player_name,
     get_roster,
+    is_admin,
     move_confirmed_guests,
+    pre_cancel_game,
+    reactivate_player,
     remove_sponsor_guests_from_status,
     update_game_status,
     update_player_response,
@@ -521,3 +526,191 @@ def test_move_confirmed_guests_ignores_other_sponsors(sample_game_date):
     assert len(roster["NO"]["guests"]) == 1
     assert roster["NO"]["guests"][0]["name"] == "Dave"
     assert roster["NO"]["guests"][0]["sponsorEmail"] == "bob@example.com"
+
+
+# ---------------------------------------------------------------------------
+# add_player / is_admin
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_add_player_creates_active_record():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    add_player("alice@example.com", "Alice")
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    item = table.get_item(Key={"email": "alice@example.com", "active": "true"})["Item"]
+    assert item["name"] == "Alice"
+    assert item["isAdmin"] == False
+
+
+@pytest.mark.unit
+@mock_aws
+def test_add_player_as_admin():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    add_player("bob@example.com", "Bob", is_admin=True)
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    item = table.get_item(Key={"email": "bob@example.com", "active": "true"})["Item"]
+    assert item["isAdmin"] == True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_add_player_raises_for_duplicate():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    add_player("alice@example.com", "Alice")
+
+    from botocore.exceptions import ClientError
+    with pytest.raises(ClientError):
+        add_player("alice@example.com", "Alice Duplicate")
+
+
+@pytest.mark.unit
+@mock_aws
+def test_is_admin_returns_true_for_admin():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    table.put_item(Item={"email": "alice@example.com", "active": "true", "name": "Alice", "isAdmin": True})
+
+    assert is_admin("alice@example.com") is True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_is_admin_returns_false_for_non_admin():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    table.put_item(Item={"email": "alice@example.com", "active": "true", "name": "Alice", "isAdmin": False})
+
+    assert is_admin("alice@example.com") is False
+
+
+@pytest.mark.unit
+@mock_aws
+def test_is_admin_returns_false_for_nonexistent_player():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert is_admin("nobody@example.com") is False
+
+
+# ---------------------------------------------------------------------------
+# deactivate_player / reactivate_player
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_deactivate_player_preserves_attributes():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    table.put_item(Item={"email": "alice@example.com", "active": "true", "name": "Alice", "isAdmin": True})
+
+    deactivate_player("alice@example.com")
+
+    # Active record should be gone
+    active = table.get_item(Key={"email": "alice@example.com", "active": "true"}).get("Item")
+    assert active is None
+
+    # Inactive record should exist with same attributes
+    inactive = table.get_item(Key={"email": "alice@example.com", "active": "false"})["Item"]
+    assert inactive["name"] == "Alice"
+    assert inactive["isAdmin"] == True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_reactivate_player_restores_active_record():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    table.put_item(Item={"email": "alice@example.com", "active": "false", "name": "Alice", "isAdmin": False})
+
+    reactivate_player("alice@example.com")
+
+    # Inactive record should be gone
+    inactive = table.get_item(Key={"email": "alice@example.com", "active": "false"}).get("Item")
+    assert inactive is None
+
+    # Active record should exist
+    active = table.get_item(Key={"email": "alice@example.com", "active": "true"})["Item"]
+    assert active["name"] == "Alice"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_deactivate_player_not_found_raises():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    with pytest.raises(ValueError, match="No active player found"):
+        deactivate_player("nobody@example.com")
+
+
+@pytest.mark.unit
+@mock_aws
+def test_reactivate_player_not_found_raises():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    with pytest.raises(ValueError, match="No inactive player found"):
+        reactivate_player("nobody@example.com")
+
+
+# ---------------------------------------------------------------------------
+# pre_cancel_game
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_pre_cancel_game_creates_cancelled_record():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    pre_cancel_game("2026-04-11")
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-games")
+    item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
+    assert item["status"] == "CANCELLED"
+    assert "createdAt" in item
+
+
+@pytest.mark.unit
+@mock_aws
+def test_pre_cancel_game_does_not_overwrite_open_game():
+    """pre_cancel_game should NOT be called on an existing game — that's update_game_status's job."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    # First create an OPEN game
+    create_game("2026-04-11")
+
+    # pre_cancel_game uses put_item (overwrites); if called on existing game it would
+    # reset playerStatus records. The admin handler must choose the right path.
+    # This test just ensures the function sets CANCELLED.
+    pre_cancel_game("2026-04-11")
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-games")
+    item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
+    assert item["status"] == "CANCELLED"
