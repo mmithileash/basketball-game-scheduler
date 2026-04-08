@@ -190,6 +190,26 @@ def test_no_open_game(mocker):
 
 
 @pytest.mark.unit
+def test_handler_skips_cancelled_game(mocker):
+    """If the upcoming game is CANCELLED, reminder_checker does nothing."""
+    mocker.patch(
+        "reminder_checker.handler.get_current_open_game",
+        return_value=None,  # get_current_open_game returns None for CANCELLED games
+    )
+    mock_send_reminder = mocker.patch("reminder_checker.handler.send_reminder")
+    mock_send_cancellation = mocker.patch("reminder_checker.handler.send_cancellation")
+    mock_send_confirmation = mocker.patch("reminder_checker.handler.send_confirmation")
+
+    result = handler({}, None)
+
+    assert result["statusCode"] == 200
+    assert result["body"] == "No open game"
+    mock_send_reminder.assert_not_called()
+    mock_send_cancellation.assert_not_called()
+    mock_send_confirmation.assert_not_called()
+
+
+@pytest.mark.unit
 def test_count_confirmed_with_guests():
     """Verify _count_confirmed counts players and their guests."""
     roster = {
