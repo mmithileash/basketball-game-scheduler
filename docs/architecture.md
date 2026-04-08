@@ -16,7 +16,7 @@ Natural language understanding is provided by AWS Bedrock (Claude Haiku 3) in eu
 | Component | Service | Purpose |
 |---|---|---|
 | **Scheduling** | EventBridge | Three cron rules: Monday 9AM (announcements), Wed + Fri 9AM (reminder checks), Saturday 1PM UTC (game finalisation) |
-| **Compute** | Lambda (×4) | `announcement-sender`, `email-processor`, `reminder-checker`, `game-finalizer` — each is a focused, single-purpose function |
+| **Compute** | Lambda (×5) | `announcement-sender`, `email-processor`, `reminder-checker`, `game-finalizer`, `admin-processor` — each is a focused, single-purpose function |
 | **Email — Outbound** | SES | Sends announcements, reminders, and NLU-generated replies to players |
 | **Email — Inbound** | SES Receipt Rule Set | Catches player replies via MX record and stores them in S3 |
 | **Raw Email Store** | S3 | Stores the full raw email (headers + body) for each inbound player reply |
@@ -32,7 +32,53 @@ Natural language understanding is provided by AWS Bedrock (Claude Haiku 3) in eu
 
 ---
 
-## 2. Monday Announcement Flow
+## 2. Admin Command Flow
+
+![Admin Command Flow](diagrams/07_admin_flow.png)
+
+Admins interact with the system by emailing `admin@<domain>`. The `admin-processor` Lambda handles all admin commands.
+
+### Admin identity
+
+Admin status is stored as an `isAdmin` flag on a player's record in DynamoDB. This means admins can be added or removed at runtime without redeployment.
+
+### Step-by-step
+
+1. **Admin emails** a natural-language command to `admin@<domain>` (e.g. "Cancel the game on 2026-04-19")
+2. **SES Receipt Rule** matches the `admin@` recipient (checked before the catch-all domain rule) and stores the email in S3 under the `admin/` prefix
+3. **S3 Event Notification** triggers Lambda `admin-processor` (prefix filter: `admin/`)
+4. Lambda checks **`is_admin(sender_email)`** against DynamoDB — returns 403 + rejection email if not an admin
+5. Lambda calls **`parse_admin_email`** (Bedrock) to classify the intent
+6. Lambda executes the action based on intent:
+
+| Intent | Action |
+|---|---|
+| `CANCEL_GAME` (no existing record) | `pre_cancel_game(date)` — writes a CANCELLED `gameStatus` item; `announcement-sender` will send a "no game this week" email instead of an announcement |
+| `CANCEL_GAME` (game is `OPEN`) | `update_game_status(date, "CANCELLED")` + broadcast cancellation email to all YES/MAYBE players |
+| `CANCEL_GAME` (already cancelled/played) | Replies with current status; no action taken |
+| `ADD_PLAYER` | `add_player(email, name)` — fails with error email if player already exists |
+| `ADD_ADMIN` | `add_player(email, name, is_admin=True)` |
+| `DEACTIVATE_PLAYER` | Atomically removes `active=true` record and writes `active=false` record |
+| `REACTIVATE_PLAYER` | Reverse of deactivate |
+| `UNKNOWN` | Replies with help text listing available commands |
+
+7. Lambda **emails the admin** a confirmation (or error) reply
+
+### SES rule ordering
+
+The admin receipt rule uses `recipients = [admin@<domain>]` and is created first. The catch-all player reply rule uses `recipients = [<domain>]` and is chained after via `after = admin_rule.name`. This ensures admin emails never reach the player email processor.
+
+### Pre-cancellation flow
+
+When an admin cancels a game before Monday's announcement:
+- `pre_cancel_game` writes a `gameStatus` item with `status = CANCELLED`
+- On Monday, `announcement-sender` calls `get_game_status(next_saturday)` before creating a game
+- If CANCELLED, it sends a "no game this week" email to all active players instead of the normal announcement
+- No game record is created, so `reminder-checker` has nothing to act on
+
+---
+
+## 3. Monday Announcement Flow
 
 ![Monday Announcement Flow](diagrams/02_announcement_flow.png)
 
@@ -68,7 +114,7 @@ You can also ask "who's playing?" at any time.
 
 ---
 
-## 3. Player Reply Processing — NLU Flow
+## 4. Player Reply Processing — NLU Flow
 
 ![Player Reply Processing](diagrams/03_email_processing.png)
 
@@ -149,7 +195,7 @@ All guest communication goes through the sponsoring player's email address. Gues
 
 ---
 
-## 4. Reminder & Cancellation Flow
+## 5. Reminder & Cancellation Flow
 
 ![Reminder and Cancellation Flow](diagrams/04_reminder_flow.png)
 
@@ -197,7 +243,7 @@ See you next week!
 
 ---
 
-## 5. Game Finalisation Flow
+## 6. Game Finalisation Flow
 
 ![Game Finalisation Flow](diagrams/05_game_finalizer_flow.png)
 
@@ -219,7 +265,7 @@ See you next week!
 
 ---
 
-## 6. Data Model
+## 7. Data Model
 
 ![Data Model](diagrams/06_data_model.png)
 
@@ -292,12 +338,12 @@ The `guests` array is a flat list across all sponsors. `pk`+`sk` uniquely identi
 
 ---
 
-## 7. AWS Services & Cost Summary
+## 8. AWS Services & Cost Summary
 
 | Service | Role | Monthly Cost |
 |---|---|---|
 | EventBridge | Cron triggers (Mon, Wed, Fri, Sat) | Free |
-| Lambda (×4) | Announcement, reminder, email processing, game finalisation | Free |
+| Lambda (×5) | Announcement, reminder, email processing, game finalisation, admin commands | Free |
 | SES Outbound | Sends announcements, reminders, replies | Free (≤62K emails/month from Lambda) |
 | SES Inbound | Receives player reply emails | Free (≤1K emails/month) |
 | S3 | Stores raw inbound emails | Free |
@@ -311,7 +357,7 @@ The `guests` array is a flat list across all sponsors. `pk`+`sk` uniquely identi
 
 ---
 
-## 8. Prerequisites Before Building
+## 9. Prerequisites Before Building
 
 1. **Register a domain** via Route 53 (e.g. `bballsched.link`) — required for SES inbound MX records
 2. **Exit SES sandbox** — new AWS accounts are sandboxed; submit a support request to enable sending to unverified addresses
@@ -320,18 +366,18 @@ The `guests` array is a flat list across all sponsors. `pk`+`sk` uniquely identi
 
 ---
 
-## 9. Infrastructure as Code
+## 10. Infrastructure as Code
 
 All AWS resources will be provisioned via **Terraform**. The configuration will create:
 
-- 4 Lambda functions with IAM roles
+- 5 Lambda functions with IAM roles
 - 2 DynamoDB tables (Players + Games)
 - 1 S3 bucket with event notification
-- SES domain identity, receipt rule set, and receipt rule
+- SES domain identity, receipt rule set, and receipt rules (admin rule + player reply rule, ordered)
 - 3 EventBridge rules (Monday + Wed/Fri + Saturday)
 - Route 53 hosted zone and MX record
 - Bedrock model access (manual console step — documented)
 
 ---
 
-*Generated diagrams are in [docs/diagrams/](diagrams/) — regenerate with `python3 docs/generate_diagrams.py`*
+*Generated diagrams are in [docs/diagrams/](diagrams/) — regenerate with `python3 docs/generate_diagrams.py` (7 diagrams total)*

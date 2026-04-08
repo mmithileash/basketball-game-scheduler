@@ -4,12 +4,13 @@ An automated, email-based basketball game scheduler built on AWS serverless infr
 
 ## How It Works
 
-1. **Monday 9AM** — An announcement email is sent to all active players for Saturday's game
+1. **Monday 9AM** — An announcement email is sent to all active players for Saturday's game (skipped if an admin pre-cancelled it)
 2. **Players reply** in natural language — "I'm in", "Can't make it", "I'll bring 2 friends", "Who's playing?"
 3. **The system understands** the intent via Claude (Bedrock) and updates the roster accordingly
 4. **Wed & Fri 9AM** — If fewer than 6 players have confirmed, reminders are sent. If still under 6 by Friday, the game is cancelled
 5. **Friday with 6+** — Confirmation emails go out with the final roster
 6. **Saturday 1PM UTC** — The game is marked as PLAYED in DynamoDB
+7. **Admins** can email `admin@<domain>` at any time to cancel a game, add players, or deactivate/reactivate players
 
 ## Architecture
 
@@ -22,11 +23,11 @@ Fully serverless on AWS (eu-west-1):
 | Service | Role |
 |---|---|
 | **EventBridge** | Cron schedules (Mon, Wed, Fri, Sat) |
-| **Lambda** (×4) | announcement-sender, email-processor, reminder-checker, game-finalizer |
+| **Lambda** (×5) | announcement-sender, email-processor, reminder-checker, game-finalizer, admin-processor |
 | **SES** | Send and receive emails |
-| **S3** | Store raw inbound emails |
+| **S3** | Store raw inbound emails (prefix-routed: `inbound/` → players, `admin/` → admin) |
 | **DynamoDB** (×2 tables) | Players + Games (including RSVPs) |
-| **Bedrock** (Claude Haiku) | Parse player intent from free-text email replies |
+| **Bedrock** (Claude Haiku) | Parse player intent and admin commands from free-text emails |
 | **Route 53** | Domain DNS + MX records for SES inbound |
 
 Estimated monthly cost: **~$1.40–1.80**
@@ -45,7 +46,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed flow diagrams, dat
 │   ├── announcement_sender/     # Monday announcement Lambda
 │   ├── email_processor/         # Inbound email processing Lambda
 │   ├── reminder_checker/        # Wed/Fri reminder & cancellation Lambda
-│   └── game_finalizer/          # Saturday game finalisation Lambda
+│   ├── game_finalizer/          # Saturday game finalisation Lambda
+│   └── admin_processor/         # Admin command email Lambda
 ├── terraform/                   # Infrastructure as Code
 ├── tests/
 │   ├── unit/                    # Unit tests (moto mocks)
@@ -112,6 +114,7 @@ Terraform will prompt for required variables, or create a `terraform.tfvars` fil
 ```hcl
 domain_name    = "yourdomain.com"
 sender_email   = "scheduler@yourdomain.com"
+admin_email    = "admin@yourdomain.com"
 game_time      = "10:00 AM"
 game_location  = "Community Center Court"
 ```
@@ -146,6 +149,7 @@ After `terraform apply`, update your domain registrar's nameservers to the ones 
 |---|---|---|
 | `domain_name` | Domain for SES email | *(required)* |
 | `sender_email` | From address for outgoing emails | *(required)* |
+| `admin_email` | Admin command inbox (`admin@<domain>`) | *(required)* |
 | `game_time` | Game time shown in announcements | `10:00 AM` |
 | `game_location` | Game location shown in announcements | `TBD` |
 | `bedrock_model_id` | Bedrock model for NLU | `anthropic.claude-3-haiku-20240307-v1:0` |
@@ -164,6 +168,21 @@ Players reply to emails in natural language. The system understands:
 | "I'll bring 2 friends, Mike and Sarah" | Confirmed with 2 guests |
 | "Who's playing?" | Receives current roster |
 | "Is John coming?" | Receives that player's status |
+
+## Admin Commands
+
+Admins email `admin@<domain>` in natural language. Admin status is stored in DynamoDB (not config) so admins can be added at runtime without redeployment.
+
+| What the admin says | What happens |
+|---|---|
+| "Cancel the game on 2026-04-19" (before announcement) | Game pre-cancelled; Monday sends "no game this week" email |
+| "Cancel the game on 2026-04-19" (after announcement) | Game cancelled; YES/MAYBE players notified immediately |
+| "Add player alice@example.com, name Alice" | Alice added as an active player |
+| "Add admin bob@example.com, name Bob" | Bob added as an active admin |
+| "Deactivate charlie@example.com" | Charlie deactivated; no longer receives game emails |
+| "Reactivate charlie@example.com" | Charlie reactivated |
+
+Non-admins who email the admin address receive a rejection email.
 
 ## Data Model
 
