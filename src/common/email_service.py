@@ -159,3 +159,34 @@ def send_guest_followup(
     )
 
     send_email(sponsor_email, subject, body)
+
+
+def send_no_game_announcement(
+    player_email: str,
+    player_name: str | None,
+    game_date: str,
+) -> None:
+    """Notify a player that no game is scheduled this week (admin pre-cancelled)."""
+    greeting = f"Hi {player_name}" if player_name else "Hi"
+
+    subject = f"No Game This Week - {game_date}"
+    body = (
+        f"{greeting},\n\n"
+        f"There will be no basketball game this week ({game_date}). "
+        f"The game has been cancelled by the organiser.\n\n"
+        f"See you next week!\n"
+    )
+
+    send_email(player_email, subject, body)
+
+
+def send_admin_cancelled_broadcast(player_email: str, game_date: str) -> None:
+    """Notify a player that an already-announced game has been cancelled by admin."""
+    subject = f"Cancelled: Basketball Game - {game_date}"
+    body = (
+        f"Hi,\n\n"
+        f"The basketball game scheduled for {game_date} has been cancelled by the organiser.\n\n"
+        f"See you next week!\n"
+    )
+
+    send_email(player_email, subject, body)

@@ -3,11 +3,13 @@ import pytest
 from moto import mock_aws
 
 from common.email_service import (
+    send_admin_cancelled_broadcast,
     send_announcement,
     send_cancellation,
     send_confirmation,
     send_email,
     send_guest_followup,
+    send_no_game_announcement,
     send_reminder,
 )
 
@@ -227,3 +229,44 @@ def test_send_guest_followup_without_name(mocker):
     assert body.startswith("Hi,") or body.startswith("Hi\n")
     assert "Hi None" not in body
     assert "John" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_no_game_announcement(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+
+    send_no_game_announcement("alice@example.com", "Alice", "2026-04-11")
+
+    mock_send.assert_called_once()
+    args = mock_send.call_args[0]
+    assert args[0] == "alice@example.com"
+    assert "2026-04-11" in args[1]  # subject
+    assert "cancelled" in args[2].lower() or "no game" in args[2].lower()
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_no_game_announcement_no_name(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+
+    send_no_game_announcement("alice@example.com", None, "2026-04-11")
+
+    mock_send.assert_called_once()
+    args = mock_send.call_args[0]
+    assert "2026-04-11" in args[2]
+    assert "Hi None" not in args[2]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_admin_cancelled_broadcast(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+
+    send_admin_cancelled_broadcast("alice@example.com", "2026-04-11")
+
+    mock_send.assert_called_once()
+    args = mock_send.call_args[0]
+    assert args[0] == "alice@example.com"
+    assert "2026-04-11" in args[1]
+    assert "cancelled" in args[2].lower()
