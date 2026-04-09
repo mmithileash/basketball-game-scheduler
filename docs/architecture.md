@@ -1,7 +1,7 @@
 # Basketball Game Scheduler — Architecture (Approach A)
 
 All processing is handled by Lambda functions triggered by EventBridge (scheduled) or S3 events (inbound emails).
-Natural language understanding is provided by AWS Bedrock (Claude Haiku 3) in eu-west-1 (Ireland).
+Natural language understanding is provided by AWS Bedrock (Claude Haiku 3) in us-east-1 (N. Virginia).
 
 **Estimated cost: ~$1.40–1.80/month**
 
@@ -276,8 +276,9 @@ See you next week!
 | Attribute | Key | Type | Description |
 |---|---|---|---|
 | `email` | **PK** | String | Player's email address, or sponsor's email for nameless guests |
-| `active` | **SK** | String | `true` for permanent players; `guest#active` or `guest#active#<name>` for guests |
+| `active` | **SK** | String | `"true"` for active players; `"false"` for deactivated players; `"guest#active"` or `"guest#active#<name>"` for guests |
 | `name` | — | String (nullable) | Display name |
+| `isAdmin` | — | Boolean | `true` for admin players; absent or `false` for regular players |
 | `sponsorEmail` | — | String | Sponsor's email — guest entries only |
 | `gameDate` | — | String | Game the guest was created for — guest entries only |
 

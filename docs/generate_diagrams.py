@@ -242,8 +242,11 @@ def diagram_6_data_model():
             <TR><TD BGCOLOR="#e8f4fd" COLSPAN="3"><B>Player profiles — email as PK, active status as SK</B></TD></TR>
             <TR><TD BGCOLOR="#ddd" ALIGN="LEFT"><B>Attribute</B></TD><TD BGCOLOR="#ddd" ALIGN="LEFT"><B>Key</B></TD><TD BGCOLOR="#ddd" ALIGN="LEFT"><B>Type</B></TD></TR>
             <TR><TD ALIGN="LEFT"><FONT COLOR="#2171b5"><B>email</B></FONT></TD><TD ALIGN="LEFT"><I>PK</I></TD><TD ALIGN="LEFT">string</TD></TR>
-            <TR><TD ALIGN="LEFT"><FONT COLOR="#2171b5"><B>active</B></FONT></TD><TD ALIGN="LEFT"><I>SK</I></TD><TD ALIGN="LEFT">string (true / false)</TD></TR>
+            <TR><TD ALIGN="LEFT"><FONT COLOR="#2171b5"><B>active</B></FONT></TD><TD ALIGN="LEFT"><I>SK</I></TD><TD ALIGN="LEFT">string ("true" / "false" / "guest#active" / "guest#active#&lt;name&gt;")</TD></TR>
             <TR><TD ALIGN="LEFT">name</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">string (nullable)</TD></TR>
+            <TR><TD ALIGN="LEFT">isAdmin</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">boolean (admin players only)</TD></TR>
+            <TR><TD ALIGN="LEFT">sponsorEmail</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">string (guest entries only)</TD></TR>
+            <TR><TD ALIGN="LEFT">gameDate</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">string (guest entries only)</TD></TR>
         </TABLE>
     >''')
 
@@ -267,9 +270,9 @@ def diagram_6_data_model():
             <TR><TD BGCOLOR="#b58900" COLSPAN="4"><FONT COLOR="white"><B>Example Items in Games Table</B></FONT></TD></TR>
             <TR><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>PK</B></TD><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>SK</B></TD><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>players</B></TD><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>Other</B></TD></TR>
             <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">gameStatus</TD><TD ALIGN="LEFT">—</TD><TD ALIGN="LEFT">status=OPEN, createdAt=...</TD></TR>
-            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#YES</TD><TD ALIGN="LEFT">{"john@mail.com": {"guests": ["Mike","Sarah"]},<BR/> "jane@mail.com": {"guests": []}}</TD><TD ALIGN="LEFT">—</TD></TR>
-            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#NO</TD><TD ALIGN="LEFT">{"bob@mail.com": {}}</TD><TD ALIGN="LEFT">—</TD></TR>
-            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#MAYBE</TD><TD ALIGN="LEFT">{"alice@mail.com": {"guests": ["Tom"]}}</TD><TD ALIGN="LEFT">—</TD></TR>
+            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#YES</TD><TD ALIGN="LEFT">{"john@mail.com": {"name": "John"},<BR/> "jane@mail.com": {"name": "Jane"}}</TD><TD ALIGN="LEFT">guests: [{pk,sk,name,sponsorEmail,sponsorName}]</TD></TR>
+            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#NO</TD><TD ALIGN="LEFT">{"bob@mail.com": {"name": "Bob"}}</TD><TD ALIGN="LEFT">guests: []</TD></TR>
+            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#MAYBE</TD><TD ALIGN="LEFT">{"alice@mail.com": {"name": "Alice"}}</TD><TD ALIGN="LEFT">guests: []</TD></TR>
         </TABLE>
     >''')
 
