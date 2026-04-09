@@ -15,12 +15,18 @@ from common.dynamo import (
     delete_guest_entries,
     get_player_name,
     get_roster,
+    get_sender_role,
     get_upcoming_game,
     move_confirmed_guests,
+    remove_guest_from_status,
     remove_sponsor_guests_from_status,
     update_player_response,
 )
-from common.email_service import send_email, send_guest_followup
+from common.email_service import (
+    send_email,
+    send_guest_cancelled_sponsor_notification,
+    send_guest_followup,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -196,6 +202,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     sender_email = _extract_sender_email(from_header)
     logger.info("Email from %s, subject: %s", sender_email, subject)
 
+    # Reject unregistered senders before touching game state or calling Bedrock
+    role = get_sender_role(sender_email)
+    if role == "unknown":
+        logger.warning("Rejected unregistered sender: %s", sender_email)
+        send_email(
+            sender_email,
+            "Re: " + subject,
+            "You are not a registered player. "
+            "Please contact the organiser if you believe this is an error.",
+        )
+        return {"statusCode": 403, "body": "Not a registered player"}
+
     # Look up the upcoming Saturday's game (regardless of status). We need
     # the raw status here so we can distinguish "no game scheduled at all"
     # from "the game was cancelled" — those should produce different replies.
@@ -230,8 +248,42 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     game_date = upcoming_game["gameDate"]
 
-    # Get current roster and find player's current status
+    # Get current roster
     roster = get_roster(game_date)
+
+    # Guest path — limited to DECLINE and roster queries only
+    if role == "guest":
+        parsed = parse_player_email(body, sender_email, roster)
+        intent = parsed["intent"]
+        reply_draft = parsed.get("reply_draft", "Thanks for your message!")
+        logger.info("Guest intent for %s: %s", sender_email, intent)
+
+        if intent == "DECLINE":
+            guest_obj = remove_guest_from_status(game_date, "YES", sender_email)
+            if guest_obj:
+                add_guests_to_game_status(game_date, "NO", [guest_obj])
+                sponsor_name = get_player_name(guest_obj["sponsorEmail"])
+                send_guest_cancelled_sponsor_notification(
+                    guest_obj["sponsorEmail"],
+                    sponsor_name,
+                    guest_obj["name"],
+                    game_date,
+                )
+        elif intent not in ("QUERY_ROSTER", "QUERY_PLAYER"):
+            reply_draft = (
+                "As a guest you can only cancel your attendance or ask who's playing. "
+                "Please contact the organiser for anything else."
+            )
+
+        updated_roster = get_roster(game_date)
+        roster_summary = _format_roster_summary(updated_roster)
+        send_email(sender_email, "Re: " + subject, f"{reply_draft}{roster_summary}")
+        return {
+            "statusCode": 200,
+            "body": {"sender": sender_email, "intent": intent, "gameDate": game_date},
+        }
+
+    # Player path — full intent processing
     old_status = _find_player_status(sender_email, roster)
 
     # Parse intent using Bedrock

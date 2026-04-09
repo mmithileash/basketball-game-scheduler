@@ -40,6 +40,7 @@ def test_handler_join(mocker):
     mock_s3 = mocker.MagicMock()
     mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
     mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
 
     mocker.patch(
         "email_processor.handler.get_upcoming_game",
@@ -81,6 +82,7 @@ def test_handler_decline(mocker):
     mock_s3 = mocker.MagicMock()
     mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
     mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
 
     mocker.patch(
         "email_processor.handler.get_upcoming_game",
@@ -125,6 +127,7 @@ def test_handler_query_roster(mocker):
     mock_s3 = mocker.MagicMock()
     mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
     mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
 
     mocker.patch(
         "email_processor.handler.get_upcoming_game",
@@ -166,7 +169,8 @@ def test_handler_cancelled_game_response(mocker, dynamodb_tables):
     fake_saturday = "2026-04-11"
     mocker.patch("common.dynamo.date", wraps=date).today.return_value = fake_today
 
-    from common.dynamo import create_game, update_game_status, update_player_response
+    from common.dynamo import add_player, create_game, update_game_status, update_player_response
+    add_player("charlie@example.com", "Charlie")
     create_game(fake_saturday)
     update_player_response(fake_saturday, "alice@example.com", "YES", name="Alice")
     update_player_response(fake_saturday, "bob@example.com", "YES", name="Bob")
@@ -218,6 +222,7 @@ def test_handler_cancelled_game_query_roster(mocker):
     mock_s3 = mocker.MagicMock()
     mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
     mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
 
     mocker.patch(
         "email_processor.handler.get_upcoming_game",
@@ -255,6 +260,7 @@ def test_handler_no_open_game(mocker):
     mock_s3 = mocker.MagicMock()
     mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
     mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
 
     mocker.patch("email_processor.handler.get_upcoming_game", return_value=None)
     mock_update = mocker.patch("email_processor.handler.update_player_response")
@@ -317,6 +323,7 @@ def test_bring_guests_creates_player_entries(mocker):
     mocker.patch("email_processor.handler._get_s3_client").return_value.get_object.return_value = {
         "Body": MagicMock(read=lambda: raw_email)
     }
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch("email_processor.handler.get_upcoming_game").return_value = {"gameDate": "2026-04-05", "status": "OPEN"}
     mocker.patch("email_processor.handler.get_roster").return_value = {
         "YES": {"players": {}, "guests": []},
@@ -369,6 +376,7 @@ def test_decline_with_guests_moves_to_no_and_sends_followup():
     raw_email = _make_raw_email("alice@example.com", "Re: Game", "Can't make it")
 
     with patch("email_processor.handler._get_s3_client") as mock_s3_fn, \
+         patch("email_processor.handler.get_sender_role", return_value="player"), \
          patch("email_processor.handler.get_upcoming_game") as mock_game, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
@@ -419,6 +427,7 @@ def test_decline_without_guests_no_followup():
     raw_email = _make_raw_email("alice@example.com", "Re: Game", "Can't make it")
 
     with patch("email_processor.handler._get_s3_client") as mock_s3_fn, \
+         patch("email_processor.handler.get_sender_role", return_value="player"), \
          patch("email_processor.handler.get_upcoming_game") as mock_game, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
@@ -460,6 +469,7 @@ def test_guest_confirm_moves_guests_to_yes():
     raw_email = _make_raw_email("alice@example.com", "Re: Your guests", "John is still coming")
 
     with patch("email_processor.handler._get_s3_client") as mock_s3_fn, \
+         patch("email_processor.handler.get_sender_role", return_value="player"), \
          patch("email_processor.handler.get_upcoming_game") as mock_game, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
@@ -502,6 +512,7 @@ def test_guest_confirm_with_no_confirmed_names_does_not_move_guests():
     raw_email = _make_raw_email("alice@example.com", "Re: Your guests", "unsure")
 
     with patch("email_processor.handler._get_s3_client") as mock_s3_fn, \
+         patch("email_processor.handler.get_sender_role", return_value="player"), \
          patch("email_processor.handler.get_upcoming_game") as mock_game, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
@@ -642,3 +653,133 @@ def test_extract_body_html_fallback_strips_quotes():
     assert "I'm in!" in extracted
     assert "Are you playing" not in extracted
     assert "Scheduler" not in extracted
+
+
+@pytest.mark.unit
+def test_handler_unknown_sender_rejected(mocker):
+    """Unknown senders receive a rejection email and no Bedrock call is made."""
+    raw_email = _make_raw_email("stranger@example.com", "Re: Basketball Game", "I'm in!")
+
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="unknown")
+
+    mock_parse = mocker.patch("email_processor.handler.parse_player_email")
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 403
+    mock_parse.assert_not_called()
+    mock_update.assert_not_called()
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "not a registered player" in body.lower()
+
+
+@pytest.mark.unit
+def test_handler_guest_decline_cancels_and_notifies_sponsor(mocker):
+    """Guest DECLINE removes them from YES, moves to NO, and notifies the sponsor."""
+    raw_email = _make_raw_email("john@example.com", "Re: Basketball Game", "Can't make it")
+
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
+    mocker.patch(
+        "email_processor.handler.get_upcoming_game",
+        return_value={"gameDate": "2026-04-19", "status": "OPEN"},
+    )
+    guest_obj = {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"}
+    mocker.patch("email_processor.handler.get_roster", return_value={
+        "YES": {"players": {}, "guests": [guest_obj]},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mocker.patch("email_processor.handler.parse_player_email", return_value={
+        "intent": "DECLINE", "reply_draft": "Sorry to hear that!",
+        "guests": [], "confirmed_guest_names": [], "query_target": None,
+    })
+    mock_remove = mocker.patch("email_processor.handler.remove_guest_from_status", return_value=guest_obj)
+    mock_add = mocker.patch("email_processor.handler.add_guests_to_game_status")
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mock_notify = mocker.patch("email_processor.handler.send_guest_cancelled_sponsor_notification")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_remove.assert_called_once_with("2026-04-19", "YES", "john@example.com")
+    mock_add.assert_called_once_with("2026-04-19", "NO", [guest_obj])
+    mock_notify.assert_called_once_with("alice@example.com", "Alice", "John", "2026-04-19")
+    mock_send.assert_called_once()
+    assert mock_send.call_args[0][0] == "john@example.com"
+
+
+@pytest.mark.unit
+def test_handler_guest_query_roster_allowed(mocker):
+    """Guest QUERY_ROSTER is allowed and gets a roster reply."""
+    raw_email = _make_raw_email("john@example.com", "Re: Basketball Game", "Who's playing?")
+
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
+    mocker.patch(
+        "email_processor.handler.get_upcoming_game",
+        return_value={"gameDate": "2026-04-19", "status": "OPEN"},
+    )
+    mocker.patch("email_processor.handler.get_roster", return_value={
+        "YES": {"players": {}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mocker.patch("email_processor.handler.parse_player_email", return_value={
+        "intent": "QUERY_ROSTER", "reply_draft": "Here's who's playing...",
+        "guests": [], "confirmed_guest_names": [], "query_target": None,
+    })
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"]["intent"] == "QUERY_ROSTER"
+    mock_update.assert_not_called()
+    mock_send.assert_called_once()
+
+
+@pytest.mark.unit
+def test_handler_guest_join_rejected(mocker):
+    """Guest attempting to JOIN gets a restriction message, no roster update."""
+    raw_email = _make_raw_email("john@example.com", "Re: Basketball Game", "I'm in!")
+
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(raw_email)}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
+    mocker.patch(
+        "email_processor.handler.get_upcoming_game",
+        return_value={"gameDate": "2026-04-19", "status": "OPEN"},
+    )
+    mocker.patch("email_processor.handler.get_roster", return_value={
+        "YES": {"players": {}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mocker.patch("email_processor.handler.parse_player_email", return_value={
+        "intent": "JOIN", "reply_draft": "You're in!",
+        "guests": [], "confirmed_guest_names": [], "query_target": None,
+    })
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_update.assert_not_called()
+    body = mock_send.call_args[0][2]
+    assert "only cancel" in body.lower() or "as a guest" in body.lower()

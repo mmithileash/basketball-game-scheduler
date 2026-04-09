@@ -270,3 +270,33 @@ def test_send_admin_cancelled_broadcast(mocker):
     assert args[0] == "alice@example.com"
     assert "2026-04-11" in args[1]
     assert "cancelled" in args[2].lower()
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_guest_cancelled_sponsor_notification(mocker):
+    from common.email_service import send_guest_cancelled_sponsor_notification
+    mock_send = mocker.patch("common.email_service.send_email")
+
+    send_guest_cancelled_sponsor_notification("alice@example.com", "Alice", "John", "2026-04-19")
+
+    mock_send.assert_called_once()
+    to, subject, body = mock_send.call_args[0]
+    assert to == "alice@example.com"
+    assert "2026-04-19" in subject
+    assert "John" in body
+    assert "Hi Alice" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_guest_cancelled_sponsor_notification_no_name(mocker):
+    from common.email_service import send_guest_cancelled_sponsor_notification
+    mock_send = mocker.patch("common.email_service.send_email")
+
+    send_guest_cancelled_sponsor_notification("alice@example.com", None, "John", "2026-04-19")
+
+    mock_send.assert_called_once()
+    _, _, body = mock_send.call_args[0]
+    assert "Hi None" not in body
+    assert "John" in body

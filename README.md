@@ -169,6 +169,10 @@ Players reply to emails in natural language. The system understands:
 | "Who's playing?" | Receives current roster |
 | "Is John coming?" | Receives that player's status |
 
+Only registered players and known guests (those with their own contact email) can interact with the system. Unknown senders receive a rejection email with no roster data leaked.
+
+Guests with a contact email can also reply to cancel their attendance ("Can't make it") or query the roster ("Who's playing?"). When a guest cancels, their sponsor is notified. Guests with a contact email also receive Friday confirmation and cancellation emails directly.
+
 ## Admin Commands
 
 Admins email `admin@<domain>` in natural language. Admin status is stored in DynamoDB (not config) so admins can be added at runtime without redeployment.

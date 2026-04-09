@@ -14,6 +14,17 @@ from common.email_service import send_cancellation, send_confirmation, send_remi
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
+def _guest_contact_emails(roster: dict[str, Any], statuses: list[str]) -> list[str]:
+    """Return contact emails for guests who have their own email (sk='guest#active')."""
+    return [
+        guest["pk"]
+        for status in statuses
+        for guest in roster.get(status, {}).get("guests", [])
+        if guest.get("sk") == "guest#active"
+    ]
+
+
 def _count_confirmed(roster: dict[str, Any]) -> int:
     """Count confirmed players including their guests."""
     yes = roster.get("YES", {})
@@ -91,6 +102,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         exc_info=True,
                     )
 
+            for guest_email in _guest_contact_emails(roster, ["YES", "MAYBE"]):
+                try:
+                    send_cancellation(guest_email, game_date)
+                except Exception:
+                    logger.error(
+                        "Failed to send cancellation to guest %s", guest_email,
+                        exc_info=True,
+                    )
+
             return {
                 "statusCode": 200,
                 "body": {
@@ -109,6 +129,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 except Exception:
                     logger.error(
                         "Failed to send confirmation to %s", player_email,
+                        exc_info=True,
+                    )
+
+            for guest_email in _guest_contact_emails(roster, ["YES"]):
+                try:
+                    send_confirmation(guest_email, game_date, roster)
+                except Exception:
+                    logger.error(
+                        "Failed to send confirmation to guest %s", guest_email,
                         exc_info=True,
                     )
 

@@ -142,12 +142,22 @@ You can also ask "who's playing?" at any time.
 8. Lambda **updates DynamoDB** based on the intent (see table below)
 9. Lambda **sends the reply** back to the player via SES
 
+### Sender role check
+
+Before calling Bedrock, the handler calls `get_sender_role(email)`:
+
+| Role | Criteria | Allowed intents |
+|---|---|---|
+| `player` | `active = "true"` in Players table | All intents |
+| `guest` | `active = "guest#active"` in Players table (has own contact email) | `DECLINE`, `QUERY_ROSTER`, `QUERY_PLAYER` only |
+| `unknown` | Not found (incl. deactivated players) | None — rejection email sent immediately, no Bedrock call |
+
 ### Supported intents
 
 | Player says | Intent | System action |
 |---|---|---|
 | "I'm in!" / "Count me in" | `JOIN` | Move player to `playerStatus#YES`, reply with current headcount |
-| "Can't make it" / "I'm out" | `DECLINE` | Move player to `playerStatus#NO`; if player had guests, move guests to `playerStatus#NO` guests array and send follow-up |
+| "Can't make it" / "I'm out" | `DECLINE` | Move player to `playerStatus#NO`; if player had guests, move guests to `playerStatus#NO` guests array and send follow-up. If sender is a **guest**, removes them from YES, adds to NO, notifies sponsor |
 | "Maybe" / "Not sure yet" | `MAYBE` | Move player to `playerStatus#MAYBE` |
 | "I'll bring John and Jane" | `BRING_GUESTS` | Move player to YES; create guest entries in Players table; add guests to `playerStatus#YES` guests array |
 | "Change to 3 guests" | `UPDATE_GUESTS` | Delete old guest Players entries and YES guests array entries; create new ones |
@@ -212,8 +222,8 @@ All guest communication goes through the sponsoring player's email address. Gues
 |---|---|---|
 | Wednesday | No | Send reminder email to all PENDING players |
 | Wednesday | Yes | No action — game is on track |
-| Friday | No | Send **cancellation** email to ALL players, mark game `CANCELLED` |
-| Friday | Yes | Send **confirmation** email to all confirmed players with final roster |
+| Friday | No | Send **cancellation** email to ALL players + YES/MAYBE guests with contact emails, mark game `CANCELLED` |
+| Friday | Yes | Send **confirmation** email to all YES players + YES guests with contact emails with final roster |
 
 ### Reminder email (example)
 
@@ -290,6 +300,8 @@ Guest SK patterns:
 | Guest without contact email | `<sponsorEmail>` | `guest#active#<guestName>` |
 
 Guest entries are created on `BRING_GUESTS`/`UPDATE_GUESTS` and deleted by `game_finalizer` after `PLAYED`. They are invisible to `get_active_players()` because that query filters on `active = "true"`.
+
+Guests with `sk = "guest#active"` (own contact email as PK) are recognised as `role = "guest"` by `get_sender_role` and can email in to cancel their attendance or query the roster. Nameless guests (`sk = "guest#active#<name>"`, sponsor's email as PK) cannot email in directly.
 
 **Table 2: `Games`** — game state + RSVPs in a single table
 

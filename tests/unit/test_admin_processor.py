@@ -244,3 +244,47 @@ def test_unknown_intent_sends_error_reply(mocker):
     assert result["statusCode"] == 200
     mock_send.assert_called_once()
     assert "understand" in mock_send.call_args[0][2].lower()
+
+
+@pytest.mark.unit
+def test_cancel_game_notifies_guests_with_contact_email(mocker):
+    """Cancelling an OPEN game also emails guests with their own contact email."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.get_game_status",
+                 return_value={"status": "OPEN"})
+    mocker.patch("admin_processor.handler.update_game_status")
+    mocker.patch("admin_processor.handler.get_roster", return_value={
+        "YES": {
+            "players": {"alice@example.com": {"name": "Alice"}},
+            "guests": [
+                {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+                {"pk": "alice@example.com", "sk": "guest#active#Jane", "name": "Jane",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+            ],
+        },
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "CANCEL_GAME",
+        "game_date": "2026-04-19",
+        "email": None,
+        "name": None,
+        "is_admin": None,
+    })
+    mock_broadcast = mocker.patch("admin_processor.handler.send_admin_cancelled_broadcast")
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
+    mock_s3.return_value.get_object.return_value = {
+        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Cancel", "Cancel game 2026-04-19"))
+    }
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
+
+    assert result["statusCode"] == 200
+    broadcast_recipients = {call[0][0] for call in mock_broadcast.call_args_list}
+    # alice (player) and john (guest with contact email) should be notified
+    assert "alice@example.com" in broadcast_recipients
+    assert "john@example.com" in broadcast_recipients
+    # Jane has no own email (sk=guest#active#Jane), should NOT get a direct email
+    assert broadcast_recipients == {"alice@example.com", "john@example.com"}

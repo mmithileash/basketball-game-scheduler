@@ -602,6 +602,56 @@ def reactivate_player(email: str) -> None:
     logger.info(f"Reactivated player {email}")
 
 
+def get_sender_role(email: str) -> str:
+    """Return 'player', 'guest', or 'unknown' for the given email address.
+
+    - 'player'  — active registered player (active='true')
+    - 'guest'   — confirmed guest with their own contact email (active='guest#active')
+    - 'unknown' — not found in either form (incl. deactivated players)
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    if table.get_item(Key={"email": email, "active": "true"}).get("Item"):
+        return "player"
+    if table.get_item(Key={"email": email, "active": "guest#active"}).get("Item"):
+        return "guest"
+    return "unknown"
+
+
+def remove_guest_from_status(game_date: str, status: str, guest_pk: str) -> dict[str, Any] | None:
+    """Remove a single guest by pk from a playerStatus guests list.
+
+    Returns the removed guest object, or None if the guest was not found.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    client = _get_client()
+
+    response = table.get_item(
+        Key={"gameDate": game_date, "sk": f"playerStatus#{status}"}
+    )
+    item = response.get("Item", {})
+    all_guests: list[dict[str, Any]] = list(item.get("guests", []))
+
+    target = next((g for g in all_guests if g.get("pk") == guest_pk), None)
+    if target is None:
+        return None
+
+    remaining = [g for g in all_guests if g.get("pk") != guest_pk]
+    remaining_ddb = [_guest_to_ddb(g) for g in remaining]
+
+    client.update_item(
+        TableName=config.games_table,
+        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        UpdateExpression="SET #guests = :remaining",
+        ExpressionAttributeNames={"#guests": "guests"},
+        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
+    )
+    logger.info(f"Removed guest pk={guest_pk} from playerStatus#{status} for {game_date}")
+    return target
+
+
 def pre_cancel_game(game_date: str) -> None:
     """Write a CANCELLED gameStatus record for a date before the game is announced.
 

@@ -714,3 +714,94 @@ def test_pre_cancel_game_does_not_overwrite_open_game():
     table = dynamodb.Table("test-games")
     item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
     assert item["status"] == "CANCELLED"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_sender_role_active_player():
+    """Active player is identified as 'player'."""
+    from common.dynamo import get_sender_role
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    dynamodb.Table("test-players").put_item(Item={"email": "alice@example.com", "active": "true", "name": "Alice"})
+
+    assert get_sender_role("alice@example.com") == "player"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_sender_role_guest():
+    """Guest with own contact email is identified as 'guest'."""
+    from common.dynamo import get_sender_role
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    dynamodb.Table("test-players").put_item(
+        Item={"email": "john@example.com", "active": "guest#active", "name": "John", "sponsorEmail": "alice@example.com"}
+    )
+
+    assert get_sender_role("john@example.com") == "guest"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_sender_role_unknown():
+    """Email not in Players table at all is 'unknown'."""
+    from common.dynamo import get_sender_role
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert get_sender_role("stranger@example.com") == "unknown"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_sender_role_deactivated_player_is_unknown():
+    """Deactivated player (active='false') is treated as 'unknown'."""
+    from common.dynamo import get_sender_role
+    _create_tables()
+    _reset_dynamo_caches()
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    dynamodb.Table("test-players").put_item(Item={"email": "bob@example.com", "active": "false", "name": "Bob"})
+
+    assert get_sender_role("bob@example.com") == "unknown"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_remove_guest_from_status_found(sample_game_date):
+    """remove_guest_from_status removes the guest and returns the guest object."""
+    from common.dynamo import remove_guest_from_status
+    _create_tables()
+    _reset_dynamo_caches()
+
+    guest = {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+             "sponsorEmail": "alice@example.com", "sponsorName": "Alice"}
+    create_game(sample_game_date)
+    add_guests_to_game_status(sample_game_date, "YES", [guest])
+
+    result = remove_guest_from_status(sample_game_date, "YES", "john@example.com")
+
+    assert result is not None
+    assert result["pk"] == "john@example.com"
+
+    roster = get_roster(sample_game_date)
+    assert not any(g["pk"] == "john@example.com" for g in roster["YES"]["guests"])
+
+
+@pytest.mark.unit
+@mock_aws
+def test_remove_guest_from_status_not_found(sample_game_date):
+    """remove_guest_from_status returns None when guest pk is not in the list."""
+    from common.dynamo import remove_guest_from_status
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game(sample_game_date)
+
+    result = remove_guest_from_status(sample_game_date, "YES", "nobody@example.com")
+    assert result is None

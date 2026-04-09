@@ -117,14 +117,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 for player_email in roster.get(status_key, {}).get("players", {}).keys():
                     send_admin_cancelled_broadcast(player_email, game_date)
                     notified.add(player_email)
+                for guest in roster.get(status_key, {}).get("guests", []):
+                    if guest.get("sk") == "guest#active":
+                        send_admin_cancelled_broadcast(guest["pk"], game_date)
+                        notified.add(guest["pk"])
 
             send_email(
                 sender_email,
                 f"Re: {subject}",
                 f"Done. The game on {game_date} has been cancelled. "
-                f"Notified {len(notified)} player(s) who had responded YES or MAYBE.",
+                f"Notified {len(notified)} player(s) and guest(s) who had responded YES or MAYBE.",
             )
-            logger.info(f"Cancelled open game {game_date}, notified {len(notified)} players")
+            logger.info(f"Cancelled open game {game_date}, notified {len(notified)} players/guests")
 
         else:
             send_email(
