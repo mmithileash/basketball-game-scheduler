@@ -12,12 +12,16 @@ locals {
     GAMES_TABLE      = aws_dynamodb_table.games.name
     EMAIL_BUCKET     = aws_s3_bucket.email_inbox.id
     SENDER_EMAIL     = var.sender_email
-    ADMIN_EMAIL      = var.admin_email
     GAME_TIME        = var.game_time
     GAME_LOCATION    = var.game_location
     BEDROCK_MODEL_ID = var.bedrock_model_id
     MIN_PLAYERS      = tostring(var.min_players)
   }
+
+  lambda_admin_env_vars = merge(local.lambda_env_vars, {
+    SENDER_EMAIL = var.admin_email,
+    ADMIN_EMAIL = var.admin_email
+  })
 }
 
 # -----------------------------------------------------------------------------
@@ -39,7 +43,7 @@ resource "null_resource" "build_announcement_sender" {
       mkdir -p ${path.module}/.build/announcement_sender
       cp -r ${path.module}/../src/common ${path.module}/.build/announcement_sender/common
       cp -r ${path.module}/../src/announcement_sender/* ${path.module}/.build/announcement_sender/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/announcement_sender --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/announcement_sender --quiet
     EOT
   }
 }
@@ -63,7 +67,7 @@ resource "null_resource" "build_email_processor" {
       mkdir -p ${path.module}/.build/email_processor
       cp -r ${path.module}/../src/common ${path.module}/.build/email_processor/common
       cp -r ${path.module}/../src/email_processor/* ${path.module}/.build/email_processor/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/email_processor --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/email_processor --quiet
     EOT
   }
 }
@@ -87,7 +91,7 @@ resource "null_resource" "build_reminder_checker" {
       mkdir -p ${path.module}/.build/reminder_checker
       cp -r ${path.module}/../src/common ${path.module}/.build/reminder_checker/common
       cp -r ${path.module}/../src/reminder_checker/* ${path.module}/.build/reminder_checker/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/reminder_checker --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/reminder_checker --quiet
     EOT
   }
 }
@@ -175,7 +179,7 @@ resource "null_resource" "build_game_finalizer" {
       mkdir -p ${path.module}/.build/game_finalizer
       cp -r ${path.module}/../src/common ${path.module}/.build/game_finalizer/common
       cp -r ${path.module}/../src/game_finalizer/* ${path.module}/.build/game_finalizer/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_finalizer --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_finalizer --quiet
     EOT
   }
 }
@@ -232,7 +236,7 @@ resource "null_resource" "build_admin_processor" {
       mkdir -p ${path.module}/.build/admin_processor
       cp -r ${path.module}/../src/common ${path.module}/.build/admin_processor/common
       cp -r ${path.module}/../src/admin_processor/* ${path.module}/.build/admin_processor/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/admin_processor --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/admin_processor --quiet
     EOT
   }
 }
@@ -257,7 +261,7 @@ resource "aws_lambda_function" "admin_processor" {
   source_code_hash = data.archive_file.admin_processor_zip.output_base64sha256
 
   environment {
-    variables = local.lambda_env_vars
+    variables = local.lambda_admin_env_vars
   }
 
   tags = {

@@ -56,7 +56,7 @@ resource "aws_ses_receipt_rule" "admin_email" {
 resource "aws_ses_receipt_rule" "store_in_s3" {
   name          = "store-inbound-emails"
   rule_set_name = aws_ses_receipt_rule_set.main.rule_set_name
-  recipients    = [var.domain_name]
+  recipients    = [var.sender_email]
   enabled       = true
   scan_enabled  = true
   after         = aws_ses_receipt_rule.admin_email.name
