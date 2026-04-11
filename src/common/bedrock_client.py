@@ -1,10 +1,12 @@
 import json
 import logging
+from datetime import date
 from typing import Any
 
 import boto3
 
 from common.config import load_config
+from common.date_utils import next_saturday
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -189,10 +191,15 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
     config = _get_config()
     client = _get_bedrock_client()
 
+    today = date.today()
+    upcoming_saturday = next_saturday()
+
     system_prompt = (
         "You are an admin command parser for a basketball game scheduling system. "
         "Parse the admin's email and return a structured JSON command.\n\n"
-        f"Admin sender: {sender_email}\n\n"
+        f"Admin sender: {sender_email}\n"
+        f"Today's date: {today.isoformat()} ({today.strftime('%A')})\n"
+        f"Next upcoming Saturday (the next scheduled game): {upcoming_saturday.isoformat()}\n\n"
         "Available intents:\n"
         "- CANCEL_GAME: Admin wants to cancel a game for a specific Saturday\n"
         "- ADD_PLAYER: Admin wants to add a new regular player\n"
@@ -210,7 +217,9 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         '}}\n\n'
         "For CANCEL_GAME: set game_date to the Saturday being cancelled (YYYY-MM-DD). "
         "If the date mentioned is not a Saturday, resolve it to that week's Saturday. "
-        "If you cannot determine the date, set game_date to null.\n"
+        f"If the admin uses a relative reference like 'latest', 'upcoming', 'next', or 'this Saturday', "
+        f"resolve it to the next upcoming Saturday ({upcoming_saturday.isoformat()}). "
+        "If you truly cannot determine the date, set game_date to null.\n"
         "For ADD_ADMIN: set is_admin to true.\n"
         "For ADD_PLAYER: set is_admin to false.\n"
         "For DEACTIVATE_PLAYER / REACTIVATE_PLAYER: set email to the player's email address."
