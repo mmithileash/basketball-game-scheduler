@@ -173,3 +173,95 @@ def parse_player_email(
                 "Please reply again or contact the organizer directly."
             ),
         }
+
+
+def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
+    """Use Bedrock Claude to parse an admin command email into a structured intent.
+
+    Returns: {
+        "intent": str,  # CANCEL_GAME, ADD_PLAYER, ADD_ADMIN, DEACTIVATE_PLAYER, REACTIVATE_PLAYER, UNKNOWN
+        "game_date": str | None,   # YYYY-MM-DD Saturday, for CANCEL_GAME
+        "email": str | None,       # Target player email, for player management commands
+        "name": str | None,        # Player name, for ADD_PLAYER / ADD_ADMIN
+        "is_admin": bool | None,   # True for ADD_ADMIN
+    }
+    """
+    config = _get_config()
+    client = _get_bedrock_client()
+
+    system_prompt = (
+        "You are an admin command parser for a basketball game scheduling system. "
+        "Parse the admin's email and return a structured JSON command.\n\n"
+        f"Admin sender: {sender_email}\n\n"
+        "Available intents:\n"
+        "- CANCEL_GAME: Admin wants to cancel a game for a specific Saturday\n"
+        "- ADD_PLAYER: Admin wants to add a new regular player\n"
+        "- ADD_ADMIN: Admin wants to add a new admin player\n"
+        "- DEACTIVATE_PLAYER: Admin wants to deactivate/remove a player\n"
+        "- REACTIVATE_PLAYER: Admin wants to reactivate a previously inactive player\n"
+        "- UNKNOWN: Command not understood\n\n"
+        "Respond with ONLY a JSON object (no markdown, no explanation):\n"
+        '{{\n'
+        '  "intent": "...",\n'
+        '  "game_date": "YYYY-MM-DD or null — must be a Saturday, resolve to nearest Saturday if needed",\n'
+        '  "email": "player email or null",\n'
+        '  "name": "player name or null",\n'
+        '  "is_admin": true/false/null\n'
+        '}}\n\n'
+        "For CANCEL_GAME: set game_date to the Saturday being cancelled (YYYY-MM-DD). "
+        "If the date mentioned is not a Saturday, resolve it to that week's Saturday. "
+        "If you cannot determine the date, set game_date to null.\n"
+        "For ADD_ADMIN: set is_admin to true.\n"
+        "For ADD_PLAYER: set is_admin to false.\n"
+        "For DEACTIVATE_PLAYER / REACTIVATE_PLAYER: set email to the player's email address."
+    )
+
+    request_body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 256,
+        "system": system_prompt,
+        "messages": [
+            {"role": "user", "content": email_body},
+        ],
+    }
+
+    try:
+        response = client.invoke_model(
+            modelId=config.bedrock_model_id,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(request_body),
+        )
+
+        response_body = json.loads(response["body"].read())
+        assistant_text = response_body["content"][0]["text"].strip()
+        result = json.loads(assistant_text)
+
+        logger.info(f"Admin command parsed for {sender_email}: {result}")
+
+        return {
+            "intent": result.get("intent", "UNKNOWN"),
+            "game_date": result.get("game_date"),
+            "email": result.get("email"),
+            "name": result.get("name"),
+            "is_admin": result.get("is_admin"),
+        }
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse Bedrock admin response as JSON: {e}")
+        return {
+            "intent": "UNKNOWN",
+            "game_date": None,
+            "email": None,
+            "name": None,
+            "is_admin": None,
+        }
+    except Exception as e:
+        logger.error(f"Error calling Bedrock for admin command: {e}", exc_info=True)
+        return {
+            "intent": "UNKNOWN",
+            "game_date": None,
+            "email": None,
+            "name": None,
+            "is_admin": None,
+        }

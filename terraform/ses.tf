@@ -37,12 +37,29 @@ resource "aws_ses_active_receipt_rule_set" "main" {
   rule_set_name = aws_ses_receipt_rule_set.main.rule_set_name
 }
 
+resource "aws_ses_receipt_rule" "admin_email" {
+  name          = "store-admin-emails"
+  rule_set_name = aws_ses_receipt_rule_set.main.rule_set_name
+  recipients    = [var.admin_email]
+  enabled       = true
+  scan_enabled  = true
+
+  s3_action {
+    bucket_name       = aws_s3_bucket.email_inbox.id
+    object_key_prefix = "admin/"
+    position          = 1
+  }
+
+  depends_on = [aws_s3_bucket_policy.allow_ses_put]
+}
+
 resource "aws_ses_receipt_rule" "store_in_s3" {
   name          = "store-inbound-emails"
   rule_set_name = aws_ses_receipt_rule_set.main.rule_set_name
-  recipients    = [var.domain_name]
+  recipients    = [var.sender_email]
   enabled       = true
   scan_enabled  = true
+  after         = aws_ses_receipt_rule.admin_email.name
 
   s3_action {
     bucket_name       = aws_s3_bucket.email_inbox.id

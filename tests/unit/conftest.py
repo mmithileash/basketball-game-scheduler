@@ -12,6 +12,7 @@ def set_env_vars(monkeypatch):
     monkeypatch.setenv("GAMES_TABLE", "test-games")
     monkeypatch.setenv("EMAIL_BUCKET", "test-email-bucket")
     monkeypatch.setenv("SENDER_EMAIL", "scheduler@example.com")
+    monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("GAME_TIME", "10:00 AM")
     monkeypatch.setenv("GAME_LOCATION", "Main Court")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
@@ -33,6 +34,12 @@ def set_env_vars(monkeypatch):
     email_mod._ses_client = None
     bedrock_mod._config = None
     bedrock_mod._bedrock_client = None
+
+    try:
+        import admin_processor.handler as admin_mod
+        admin_mod._s3_client = None
+    except ImportError:
+        pass
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ class Config:
     games_table: str
     email_bucket: str
     sender_email: str
+    admin_email: str
     game_time: str
     game_location: str
     bedrock_model_id: str
@@ -20,6 +21,7 @@ def load_config() -> Config:
         games_table=os.environ["GAMES_TABLE"],
         email_bucket=os.environ["EMAIL_BUCKET"],
         sender_email=os.environ["SENDER_EMAIL"],
+        admin_email=os.environ["ADMIN_EMAIL"],
         game_time=os.environ.get("GAME_TIME", "10:00 AM"),
         game_location=os.environ.get("GAME_LOCATION", "TBD"),
         bedrock_model_id=os.environ.get(

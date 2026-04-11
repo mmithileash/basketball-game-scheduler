@@ -4,6 +4,7 @@ locals {
     email_processor     = "email-processor"
     reminder_checker    = "reminder-checker"
     game_finalizer      = "game-finalizer"
+    admin_processor     = "admin-processor"
   }
 
   lambda_env_vars = {
@@ -16,6 +17,11 @@ locals {
     BEDROCK_MODEL_ID = var.bedrock_model_id
     MIN_PLAYERS      = tostring(var.min_players)
   }
+
+  lambda_admin_env_vars = merge(local.lambda_env_vars, {
+    SENDER_EMAIL = var.admin_email,
+    ADMIN_EMAIL = var.admin_email
+  })
 }
 
 # -----------------------------------------------------------------------------
@@ -37,7 +43,7 @@ resource "null_resource" "build_announcement_sender" {
       mkdir -p ${path.module}/.build/announcement_sender
       cp -r ${path.module}/../src/common ${path.module}/.build/announcement_sender/common
       cp -r ${path.module}/../src/announcement_sender/* ${path.module}/.build/announcement_sender/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/announcement_sender --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/announcement_sender --quiet
     EOT
   }
 }
@@ -61,7 +67,7 @@ resource "null_resource" "build_email_processor" {
       mkdir -p ${path.module}/.build/email_processor
       cp -r ${path.module}/../src/common ${path.module}/.build/email_processor/common
       cp -r ${path.module}/../src/email_processor/* ${path.module}/.build/email_processor/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/email_processor --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/email_processor --quiet
     EOT
   }
 }
@@ -85,7 +91,7 @@ resource "null_resource" "build_reminder_checker" {
       mkdir -p ${path.module}/.build/reminder_checker
       cp -r ${path.module}/../src/common ${path.module}/.build/reminder_checker/common
       cp -r ${path.module}/../src/reminder_checker/* ${path.module}/.build/reminder_checker/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/reminder_checker --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/reminder_checker --quiet
     EOT
   }
 }
@@ -173,7 +179,7 @@ resource "null_resource" "build_game_finalizer" {
       mkdir -p ${path.module}/.build/game_finalizer
       cp -r ${path.module}/../src/common ${path.module}/.build/game_finalizer/common
       cp -r ${path.module}/../src/game_finalizer/* ${path.module}/.build/game_finalizer/
-      pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_finalizer --quiet
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_finalizer --quiet
     EOT
   }
 }
@@ -214,6 +220,59 @@ resource "aws_lambda_permission" "allow_s3_invoke" {
   statement_id   = "AllowS3Invoke"
   action         = "lambda:InvokeFunction"
   function_name  = aws_lambda_function.email_processor.function_name
+  principal      = "s3.amazonaws.com"
+  source_arn     = aws_s3_bucket.email_inbox.arn
+  source_account = data.aws_caller_identity.current.account_id
+}
+
+resource "null_resource" "build_admin_processor" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/admin_processor
+      mkdir -p ${path.module}/.build/admin_processor
+      cp -r ${path.module}/../src/common ${path.module}/.build/admin_processor/common
+      cp -r ${path.module}/../src/admin_processor/* ${path.module}/.build/admin_processor/
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/admin_processor --quiet
+    EOT
+  }
+}
+
+data "archive_file" "admin_processor_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/admin_processor"
+  output_path = "${path.module}/.build/admin_processor.zip"
+
+  depends_on = [null_resource.build_admin_processor]
+}
+
+resource "aws_lambda_function" "admin_processor" {
+  function_name    = "basketball-admin-processor"
+  description      = "Processes admin command emails for game cancellation and player management"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.admin_processor_zip.output_path
+  source_code_hash = data.archive_file.admin_processor_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_admin_env_vars
+  }
+
+  tags = {
+    Name = "basketball-admin-processor"
+  }
+}
+
+resource "aws_lambda_permission" "allow_s3_invoke_admin" {
+  statement_id   = "AllowS3InvokeAdmin"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.admin_processor.function_name
   principal      = "s3.amazonaws.com"
   source_arn     = aws_s3_bucket.email_inbox.arn
   source_account = data.aws_caller_identity.current.account_id

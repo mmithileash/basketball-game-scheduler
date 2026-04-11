@@ -45,6 +45,7 @@ def diagram_1_component_architecture():
                 fn_email = Lambda("email\n-processor")
                 fn_remind = Lambda("reminder\n-checker")
                 fn_finalize = Lambda("game\n-finalizer")
+                fn_admin = Lambda("admin\n-processor")
 
             with Cluster("Storage"):
                 dynamo = Dynamodb("DynamoDB\nPlayers / Games / RSVPs")
@@ -55,6 +56,8 @@ def diagram_1_component_architecture():
                 ses_in = SimpleEmailServiceSesEmail("SES Inbound\nRule Set")
 
             bedrock = Bedrock("Bedrock\nClaude Haiku 3")
+
+        admin = User("Admin")
 
         # Scheduling triggers
         eb_mon >> Edge(label="trigger") >> fn_announce
@@ -75,13 +78,22 @@ def diagram_1_component_architecture():
         # Inbound email flow
         domain >> Edge(label="MX") >> ses_in
         player >> Edge(label="replies") >> ses_in
-        ses_in >> Edge(label="store") >> s3
+        ses_in >> Edge(label="store\ninbound/") >> s3
         s3 >> Edge(label="S3 event") >> fn_email
         fn_email >> Edge(label="parse intent") >> bedrock
         fn_email >> Edge(label="update RSVP") >> dynamo
         fn_email >> Edge(label="send reply") >> ses_out
 
+        # Admin email flow
+        admin >> Edge(label="admin commands", color="purple") >> ses_in
+        ses_in >> Edge(label="store\nadmin/", color="purple") >> s3
+        s3 >> Edge(label="S3 event", color="purple") >> fn_admin
+        fn_admin >> Edge(label="parse command", color="purple") >> bedrock
+        fn_admin >> Edge(label="cancel/manage\nplayers", color="purple") >> dynamo
+        fn_admin >> Edge(label="send reply", color="purple") >> ses_out
+
         ses_out >> Edge(label="emails") >> player
+        ses_out >> Edge(label="confirmations", color="purple") >> admin
 
 
 # ──────────────────────────────────────────────
@@ -230,8 +242,11 @@ def diagram_6_data_model():
             <TR><TD BGCOLOR="#e8f4fd" COLSPAN="3"><B>Player profiles — email as PK, active status as SK</B></TD></TR>
             <TR><TD BGCOLOR="#ddd" ALIGN="LEFT"><B>Attribute</B></TD><TD BGCOLOR="#ddd" ALIGN="LEFT"><B>Key</B></TD><TD BGCOLOR="#ddd" ALIGN="LEFT"><B>Type</B></TD></TR>
             <TR><TD ALIGN="LEFT"><FONT COLOR="#2171b5"><B>email</B></FONT></TD><TD ALIGN="LEFT"><I>PK</I></TD><TD ALIGN="LEFT">string</TD></TR>
-            <TR><TD ALIGN="LEFT"><FONT COLOR="#2171b5"><B>active</B></FONT></TD><TD ALIGN="LEFT"><I>SK</I></TD><TD ALIGN="LEFT">string (true / false)</TD></TR>
+            <TR><TD ALIGN="LEFT"><FONT COLOR="#2171b5"><B>active</B></FONT></TD><TD ALIGN="LEFT"><I>SK</I></TD><TD ALIGN="LEFT">string ("true" / "false" / "guest#active" / "guest#active#&lt;name&gt;")</TD></TR>
             <TR><TD ALIGN="LEFT">name</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">string (nullable)</TD></TR>
+            <TR><TD ALIGN="LEFT">isAdmin</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">boolean (admin players only)</TD></TR>
+            <TR><TD ALIGN="LEFT">sponsorEmail</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">string (guest entries only)</TD></TR>
+            <TR><TD ALIGN="LEFT">gameDate</TD><TD ALIGN="LEFT"></TD><TD ALIGN="LEFT">string (guest entries only)</TD></TR>
         </TABLE>
     >''')
 
@@ -255,9 +270,9 @@ def diagram_6_data_model():
             <TR><TD BGCOLOR="#b58900" COLSPAN="4"><FONT COLOR="white"><B>Example Items in Games Table</B></FONT></TD></TR>
             <TR><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>PK</B></TD><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>SK</B></TD><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>players</B></TD><TD BGCOLOR="#f5f0d0" ALIGN="LEFT"><B>Other</B></TD></TR>
             <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">gameStatus</TD><TD ALIGN="LEFT">—</TD><TD ALIGN="LEFT">status=OPEN, createdAt=...</TD></TR>
-            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#YES</TD><TD ALIGN="LEFT">{"john@mail.com": {"guests": ["Mike","Sarah"]},<BR/> "jane@mail.com": {"guests": []}}</TD><TD ALIGN="LEFT">—</TD></TR>
-            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#NO</TD><TD ALIGN="LEFT">{"bob@mail.com": {}}</TD><TD ALIGN="LEFT">—</TD></TR>
-            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#MAYBE</TD><TD ALIGN="LEFT">{"alice@mail.com": {"guests": ["Tom"]}}</TD><TD ALIGN="LEFT">—</TD></TR>
+            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#YES</TD><TD ALIGN="LEFT">{"john@mail.com": {"name": "John"},<BR/> "jane@mail.com": {"name": "Jane"}}</TD><TD ALIGN="LEFT">guests: [{pk,sk,name,sponsorEmail,sponsorName}]</TD></TR>
+            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#NO</TD><TD ALIGN="LEFT">{"bob@mail.com": {"name": "Bob"}}</TD><TD ALIGN="LEFT">guests: []</TD></TR>
+            <TR><TD ALIGN="LEFT">2026-03-28</TD><TD ALIGN="LEFT">playerStatus#MAYBE</TD><TD ALIGN="LEFT">{"alice@mail.com": {"name": "Alice"}}</TD><TD ALIGN="LEFT">guests: []</TD></TR>
         </TABLE>
     >''')
 
@@ -270,17 +285,49 @@ def diagram_6_data_model():
     dot.render(output_path, cleanup=True)
 
 
+# ──────────────────────────────────────────────
+# Diagram 7 — Admin Command Flow
+# ──────────────────────────────────────────────
+def diagram_7_admin_flow():
+    with Diagram(
+        "Admin Command Flow",
+        filename=os.path.join(OUTPUT_DIR, "07_admin_flow"),
+        show=False,
+        direction="LR",
+        graph_attr={"fontsize": "14", "bgcolor": "white", "pad": "0.5"},
+    ):
+        admin = User("Admin")
+        ses_in = SimpleEmailServiceSesEmail("SES Inbound\n(admin@ address)")
+        s3 = S3("S3\nadmin/ prefix")
+        fn = Lambda("admin\n-processor")
+        bedrock = Bedrock("Bedrock\nClaude Haiku 3")
+        dynamo = Dynamodb("DynamoDB")
+        ses_out = SES("SES Outbound")
+
+        admin >> Edge(label="1. email command\n(cancel, add, deactivate…)") >> ses_in
+        ses_in >> Edge(label="2. store") >> s3
+        s3 >> Edge(label="3. S3 event") >> fn
+        fn >> Edge(label="4. is_admin() check") >> dynamo
+        fn >> Edge(label="5. parse_admin_email()") >> bedrock
+        bedrock >> Edge(label="6. intent + fields") >> fn
+        fn >> Edge(label="7. cancel / add /\ndeactivate / reactivate") >> dynamo
+        fn >> Edge(label="8. send confirmation") >> ses_out
+        ses_out >> Edge(label="9. deliver") >> admin
+
+
 if __name__ == "__main__":
-    print("Generating diagram 1/6 — Component Architecture...")
+    print("Generating diagram 1/7 — Component Architecture...")
     diagram_1_component_architecture()
-    print("Generating diagram 2/6 — Monday Announcement Flow...")
+    print("Generating diagram 2/7 — Monday Announcement Flow...")
     diagram_2_announcement_flow()
-    print("Generating diagram 3/6 — Player Reply Processing...")
+    print("Generating diagram 3/7 — Player Reply Processing...")
     diagram_3_email_processing()
-    print("Generating diagram 4/6 — Reminder & Cancellation Flow...")
+    print("Generating diagram 4/7 — Reminder & Cancellation Flow...")
     diagram_4_reminder_flow()
-    print("Generating diagram 5/6 — Game Finalisation Flow...")
+    print("Generating diagram 5/7 — Game Finalisation Flow...")
     diagram_5_game_finalizer_flow()
-    print("Generating diagram 6/6 — Data Model...")
+    print("Generating diagram 6/7 — Data Model...")
     diagram_6_data_model()
+    print("Generating diagram 7/7 — Admin Command Flow...")
+    diagram_7_admin_flow()
     print(f"\nDone! All PNGs saved to {OUTPUT_DIR}/")

@@ -484,3 +484,188 @@ def move_confirmed_guests(
         },
     ])
     logger.info(f"Moved {len(to_move)} guest(s) from NO to YES for {sponsor_email}")
+
+
+def add_player(email: str, name: str, is_admin: bool = False) -> None:
+    """Add a new active player to the Players table."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    table.put_item(
+        Item={
+            "email": email,
+            "active": "true",
+            "name": name,
+            "isAdmin": is_admin,
+        },
+        ConditionExpression="attribute_not_exists(email)",
+    )
+    logger.info(f"Added player {email} (name={name}, isAdmin={is_admin})")
+
+
+def is_admin(email: str) -> bool:
+    """Return True if the email belongs to an active admin player."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    response = table.get_item(Key={"email": email, "active": "true"})
+    item = response.get("Item")
+    if not item:
+        return False
+    return bool(item.get("isAdmin", False))
+
+
+
+def _to_ddb_attr(value: Any) -> dict[str, Any]:
+    """Convert a Python value to DynamoDB wire format for use in transact_write_items."""
+    if isinstance(value, bool):
+        return {"BOOL": value}
+    elif isinstance(value, str):
+        return {"S": value}
+    elif isinstance(value, (int, float)):
+        return {"N": str(value)}
+    elif value is None:
+        return {"NULL": True}
+    elif isinstance(value, list):
+        return {"L": [_to_ddb_attr(v) for v in value]}
+    elif isinstance(value, dict):
+        return {"M": {k: _to_ddb_attr(v) for k, v in value.items()}}
+    else:
+        return {"S": str(value)}
+
+
+def deactivate_player(email: str) -> None:
+    """Move a player from active to inactive, preserving all attributes."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+    client = _get_client()
+
+    response = table.get_item(Key={"email": email, "active": "true"})
+    item = response.get("Item")
+    if not item:
+        raise ValueError(f"No active player found for {email}")
+
+    inactive_item = {k: v for k, v in item.items()}
+    inactive_item["active"] = "false"
+
+    client.transact_write_items(TransactItems=[
+        {
+            "Delete": {
+                "TableName": config.players_table,
+                "Key": {
+                    "email": {"S": email},
+                    "active": {"S": "true"},
+                },
+            }
+        },
+        {
+            "Put": {
+                "TableName": config.players_table,
+                "Item": {k: _to_ddb_attr(v) for k, v in inactive_item.items()},
+            }
+        },
+    ])
+    logger.info(f"Deactivated player {email}")
+
+
+def reactivate_player(email: str) -> None:
+    """Move a player from inactive to active, preserving all attributes."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+    client = _get_client()
+
+    response = table.get_item(Key={"email": email, "active": "false"})
+    item = response.get("Item")
+    if not item:
+        raise ValueError(f"No inactive player found for {email}")
+
+    active_item = {k: v for k, v in item.items()}
+    active_item["active"] = "true"
+
+    client.transact_write_items(TransactItems=[
+        {
+            "Delete": {
+                "TableName": config.players_table,
+                "Key": {
+                    "email": {"S": email},
+                    "active": {"S": "false"},
+                },
+            }
+        },
+        {
+            "Put": {
+                "TableName": config.players_table,
+                "Item": {k: _to_ddb_attr(v) for k, v in active_item.items()},
+            }
+        },
+    ])
+    logger.info(f"Reactivated player {email}")
+
+
+def get_sender_role(email: str) -> str:
+    """Return 'player', 'guest', or 'unknown' for the given email address.
+
+    - 'player'  — active registered player (active='true')
+    - 'guest'   — confirmed guest with their own contact email (active='guest#active')
+    - 'unknown' — not found in either form (incl. deactivated players)
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    if table.get_item(Key={"email": email, "active": "true"}).get("Item"):
+        return "player"
+    if table.get_item(Key={"email": email, "active": "guest#active"}).get("Item"):
+        return "guest"
+    return "unknown"
+
+
+def remove_guest_from_status(game_date: str, status: str, guest_pk: str) -> dict[str, Any] | None:
+    """Remove a single guest by pk from a playerStatus guests list.
+
+    Returns the removed guest object, or None if the guest was not found.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    client = _get_client()
+
+    response = table.get_item(
+        Key={"gameDate": game_date, "sk": f"playerStatus#{status}"}
+    )
+    item = response.get("Item", {})
+    all_guests: list[dict[str, Any]] = list(item.get("guests", []))
+
+    target = next((g for g in all_guests if g.get("pk") == guest_pk), None)
+    if target is None:
+        return None
+
+    remaining = [g for g in all_guests if g.get("pk") != guest_pk]
+    remaining_ddb = [_guest_to_ddb(g) for g in remaining]
+
+    client.update_item(
+        TableName=config.games_table,
+        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        UpdateExpression="SET #guests = :remaining",
+        ExpressionAttributeNames={"#guests": "guests"},
+        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
+    )
+    logger.info(f"Removed guest pk={guest_pk} from playerStatus#{status} for {game_date}")
+    return target
+
+
+def pre_cancel_game(game_date: str) -> None:
+    """Write a CANCELLED gameStatus record for a date before the game is announced.
+
+    Used by admin-processor for advance cancellation. The record will prevent
+    announcement-sender from creating an OPEN game on Monday.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    now = datetime.now(timezone.utc).isoformat()
+
+    table.put_item(Item={
+        "gameDate": game_date,
+        "sk": "gameStatus",
+        "status": "CANCELLED",
+        "createdAt": now,
+    })
+    logger.info(f"Pre-cancelled game for {game_date}")

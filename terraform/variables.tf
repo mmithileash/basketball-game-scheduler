@@ -37,3 +37,8 @@ variable "environment" {
   type        = string
   default     = "prod"
 }
+
+variable "admin_email" {
+  description = "Email address for admin commands (e.g. admin@hoops.example.com)"
+  type        = string
+}

@@ -190,6 +190,26 @@ def test_no_open_game(mocker):
 
 
 @pytest.mark.unit
+def test_handler_skips_cancelled_game(mocker):
+    """If the upcoming game is CANCELLED, reminder_checker does nothing."""
+    mocker.patch(
+        "reminder_checker.handler.get_current_open_game",
+        return_value=None,  # get_current_open_game returns None for CANCELLED games
+    )
+    mock_send_reminder = mocker.patch("reminder_checker.handler.send_reminder")
+    mock_send_cancellation = mocker.patch("reminder_checker.handler.send_cancellation")
+    mock_send_confirmation = mocker.patch("reminder_checker.handler.send_confirmation")
+
+    result = handler({}, None)
+
+    assert result["statusCode"] == 200
+    assert result["body"] == "No open game"
+    mock_send_reminder.assert_not_called()
+    mock_send_cancellation.assert_not_called()
+    mock_send_confirmation.assert_not_called()
+
+
+@pytest.mark.unit
 def test_count_confirmed_with_guests():
     """Verify _count_confirmed counts players and their guests."""
     roster = {
@@ -209,3 +229,67 @@ def test_count_confirmed_with_guests():
         "MAYBE": {"players": {}, "guests": []},
     }
     assert _count_confirmed(roster) == 6  # 3 players + 3 guests
+
+
+@pytest.mark.unit
+def test_friday_confirmation_emails_guests_with_contact(mocker):
+    """Friday confirmation sends emails to YES guests with contact emails."""
+    roster = {
+        "YES": {
+            "players": {"alice@example.com": {"name": "Alice"}},
+            "guests": [
+                {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+                {"pk": "alice@example.com", "sk": "guest#active#Jane", "name": "Jane",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+            ],
+        },
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+    mocker.patch("reminder_checker.handler.get_current_open_game",
+                 return_value={"gameDate": "2026-04-19"})
+    mocker.patch("reminder_checker.handler.get_roster", return_value=roster)
+    mocker.patch("reminder_checker.handler.date").today.return_value = __import__("datetime").date(2026, 4, 17)
+    mock_confirmation = mocker.patch("reminder_checker.handler.send_confirmation")
+    mocker.patch("reminder_checker.handler.load_config").return_value.min_players = 2
+
+    from reminder_checker.handler import handler
+    handler({}, None)
+
+    emails_sent_to = [call[0][0] for call in mock_confirmation.call_args_list]
+    assert "alice@example.com" in emails_sent_to
+    assert "john@example.com" in emails_sent_to   # guest with contact email
+    assert "alice@example.com" in emails_sent_to
+    # Jane has no own email (sk=guest#active#Jane), should NOT receive directly
+    assert emails_sent_to.count("alice@example.com") == 1  # not counted twice for Jane
+
+
+@pytest.mark.unit
+def test_friday_cancellation_emails_guests_with_contact(mocker):
+    """Friday cancellation sends emails to YES guests with contact emails."""
+    roster = {
+        "YES": {
+            "players": {},
+            "guests": [
+                {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+            ],
+        },
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+    mocker.patch("reminder_checker.handler.get_current_open_game",
+                 return_value={"gameDate": "2026-04-19"})
+    mocker.patch("reminder_checker.handler.get_roster", return_value=roster)
+    mocker.patch("reminder_checker.handler.get_pending_players", return_value=[])
+    mocker.patch("reminder_checker.handler.update_game_status")
+    mocker.patch("reminder_checker.handler.date").today.return_value = __import__("datetime").date(2026, 4, 17)
+    mock_cancel = mocker.patch("reminder_checker.handler.send_cancellation")
+    mocker.patch("reminder_checker.handler.load_config").return_value.min_players = 6
+
+    from reminder_checker.handler import handler
+    handler({}, None)
+
+    emails_sent_to = [call[0][0] for call in mock_cancel.call_args_list]
+    assert "john@example.com" in emails_sent_to
