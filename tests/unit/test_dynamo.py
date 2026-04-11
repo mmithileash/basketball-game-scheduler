@@ -6,7 +6,6 @@ import pytest
 from moto import mock_aws
 
 from common.dynamo import (
-    _next_saturday,
     add_guests_to_game_status,
     add_player,
     create_game,
@@ -214,34 +213,10 @@ def test_update_player_response_change(sample_game_date):
     assert "alice@example.com" in roster["NO"]["players"]
 
 
-@pytest.mark.unit
-def test_next_saturday_from_monday():
-    assert _next_saturday(date(2026, 3, 23)) == date(2026, 3, 28)
-
-
-@pytest.mark.unit
-def test_next_saturday_from_wednesday():
-    assert _next_saturday(date(2026, 3, 25)) == date(2026, 3, 28)
-
-
-@pytest.mark.unit
-def test_next_saturday_from_friday():
-    assert _next_saturday(date(2026, 3, 27)) == date(2026, 3, 28)
-
-
-@pytest.mark.unit
-def test_next_saturday_from_saturday():
-    assert _next_saturday(date(2026, 3, 28)) == date(2026, 3, 28)
-
-
-@pytest.mark.unit
-def test_next_saturday_from_sunday():
-    assert _next_saturday(date(2026, 3, 29)) == date(2026, 4, 4)
-
 
 @pytest.mark.unit
 @mock_aws
-@patch("common.dynamo.date", wraps=date)
+@patch("common.date_utils.date", wraps=date)
 def test_get_current_open_game_found(mock_date, sample_game_date):
     """Create OPEN game for upcoming Saturday, verify found."""
     mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
@@ -258,7 +233,7 @@ def test_get_current_open_game_found(mock_date, sample_game_date):
 
 @pytest.mark.unit
 @mock_aws
-@patch("common.dynamo.date", wraps=date)
+@patch("common.date_utils.date", wraps=date)
 def test_get_current_open_game_cancelled(mock_date, sample_game_date):
     """CANCELLED game for upcoming Saturday should not be returned."""
     mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
@@ -274,7 +249,7 @@ def test_get_current_open_game_cancelled(mock_date, sample_game_date):
 
 @pytest.mark.unit
 @mock_aws
-@patch("common.dynamo.date", wraps=date)
+@patch("common.date_utils.date", wraps=date)
 def test_get_current_open_game_no_game(mock_date):
     """No game seeded, verify None returned."""
     mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
@@ -287,7 +262,7 @@ def test_get_current_open_game_no_game(mock_date):
 
 @pytest.mark.unit
 @mock_aws
-@patch("common.dynamo.date", wraps=date)
+@patch("common.date_utils.date", wraps=date)
 def test_get_current_open_game_played(mock_date, sample_game_date):
     """PLAYED game for upcoming Saturday should not be returned."""
     mock_date.today.return_value = date(2026, 3, 25)  # Wednesday

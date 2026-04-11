@@ -1,9 +1,8 @@
-from datetime import date, timedelta
 from unittest.mock import call
 
 import pytest
 
-from announcement_sender.handler import _next_saturday, handler
+from announcement_sender.handler import handler
 
 
 @pytest.mark.unit
@@ -49,23 +48,6 @@ def test_handler_no_active_players(mocker):
     assert result["body"]["playerCount"] == 0
     assert result["body"]["sentCount"] == 0
     mock_send.assert_not_called()
-
-
-@pytest.mark.unit
-def test_handler_calculates_saturday():
-    """Verify the next Saturday date calculation is correct."""
-    result = _next_saturday()
-    result_date = date.fromisoformat(result)
-
-    # Result should be a Saturday (weekday() == 5)
-    assert result_date.weekday() == 5
-
-    # Result should be in the future
-    today = date.today()
-    assert result_date > today
-
-    # Result should be within the next 7 days
-    assert result_date <= today + timedelta(days=7)
 
 
 @pytest.mark.unit
