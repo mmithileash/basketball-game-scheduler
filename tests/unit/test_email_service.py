@@ -300,3 +300,102 @@ def test_send_guest_cancelled_sponsor_notification_no_name(mocker):
     _, _, body = mock_send.call_args[0]
     assert "Hi None" not in body
     assert "John" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_announcement(mocker):
+    """send_announcement body contains the mailto unsubscribe link."""
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_announcement("player@example.com", "Alice", "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_reminder(mocker):
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_reminder("player@example.com", "Alice", 4, "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_cancellation(mocker):
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_cancellation("player@example.com", "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_confirmation(mocker):
+    _setup_ses()
+    roster = {
+        "YES": {"players": {"player@example.com": {"name": "Alice"}}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_confirmation("player@example.com", "2026-04-12", roster)
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_no_game_announcement(mocker):
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_no_game_announcement("player@example.com", "Alice", "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_guest_followup(mocker):
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_guest_followup("sponsor@example.com", "Alice", ["John"], "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_in_guest_cancelled_sponsor_notification(mocker):
+    from common.email_service import send_guest_cancelled_sponsor_notification
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_guest_cancelled_sponsor_notification("sponsor@example.com", "Alice", "John", "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_absent_by_default_in_admin_cancelled_broadcast(mocker):
+    """send_admin_cancelled_broadcast without include_unsubscribe has no footer."""
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_admin_cancelled_broadcast("player@example.com", "2026-04-12")
+    body = mock_send.call_args[0][2]
+    assert "UNSUBSCRIBE" not in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_unsubscribe_footer_present_when_requested_in_admin_cancelled_broadcast(mocker):
+    """send_admin_cancelled_broadcast with include_unsubscribe=True includes footer."""
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_admin_cancelled_broadcast("player@example.com", "2026-04-12", include_unsubscribe=True)
+    body = mock_send.call_args[0][2]
+    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body

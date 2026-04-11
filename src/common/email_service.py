@@ -25,6 +25,17 @@ def _get_ses_client():
     return _ses_client
 
 
+def _unsubscribe_footer() -> str:
+    """Return a plain-text unsubscribe block to append to player emails."""
+    config = _get_config()
+    return (
+        f"\n\n---\n"
+        f"To unsubscribe from future game emails, click the link below "
+        f"(this will open your email client with a pre-filled message):\n"
+        f"mailto:{config.sender_email}?subject=UNSUBSCRIBE\n"
+    )
+
+
 def send_email(to: str, subject: str, body: str) -> None:
     """Send an email via SES."""
     config = _get_config()
@@ -66,7 +77,7 @@ def send_announcement(
         f"We need at least 6 players to play. Looking forward to it!\n"
     )
 
-    send_email(player_email, subject, body)
+    send_email(player_email, subject, body + _unsubscribe_footer())
 
 
 def send_reminder(
@@ -88,7 +99,7 @@ def send_reminder(
         f"if you can make it.\n"
     )
 
-    send_email(player_email, subject, body)
+    send_email(player_email, subject, body + _unsubscribe_footer())
 
 
 def send_cancellation(player_email: str, game_date: str) -> None:
@@ -102,7 +113,7 @@ def send_cancellation(player_email: str, game_date: str) -> None:
         f"See you next week!\n"
     )
 
-    send_email(player_email, subject, body)
+    send_email(player_email, subject, body + _unsubscribe_footer())
 
 
 def send_confirmation(
@@ -134,7 +145,7 @@ def send_confirmation(
         f"See you there!\n"
     )
 
-    send_email(player_email, subject, body)
+    send_email(player_email, subject, body + _unsubscribe_footer())
 
 
 def send_guest_followup(
@@ -158,7 +169,7 @@ def send_guest_followup(
         f"If no reply is received before Friday's cutoff, we'll assume they won't attend.\n"
     )
 
-    send_email(sponsor_email, subject, body)
+    send_email(sponsor_email, subject, body + _unsubscribe_footer())
 
 
 def send_no_game_announcement(
@@ -177,7 +188,7 @@ def send_no_game_announcement(
         f"See you next week!\n"
     )
 
-    send_email(player_email, subject, body)
+    send_email(player_email, subject, body + _unsubscribe_footer())
 
 
 def send_guest_cancelled_sponsor_notification(
@@ -196,10 +207,10 @@ def send_guest_cancelled_sponsor_notification(
         f"If you'd like to bring another guest instead, just reply to the original announcement.\n"
     )
 
-    send_email(sponsor_email, subject, body)
+    send_email(sponsor_email, subject, body + _unsubscribe_footer())
 
 
-def send_admin_cancelled_broadcast(player_email: str, game_date: str) -> None:
+def send_admin_cancelled_broadcast(player_email: str, game_date: str, include_unsubscribe: bool = False) -> None:
     """Notify a player that an already-announced game has been cancelled by admin."""
     subject = f"Cancelled: Basketball Game - {game_date}"
     body = (
@@ -207,5 +218,6 @@ def send_admin_cancelled_broadcast(player_email: str, game_date: str) -> None:
         f"The basketball game scheduled for {game_date} has been cancelled by the organiser.\n\n"
         f"See you next week!\n"
     )
-
+    if include_unsubscribe:
+        body += _unsubscribe_footer()
     send_email(player_email, subject, body)

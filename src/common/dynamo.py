@@ -60,6 +60,29 @@ def get_active_players() -> list[dict[str, Any]]:
     return [{"email": item["email"], "name": item.get("name")} for item in items]
 
 
+def get_active_admins() -> list[dict[str, Any]]:
+    """Scan Players table for active admin players."""
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    response = table.scan(
+        FilterExpression="active = :val AND isAdmin = :admin",
+        ExpressionAttributeValues={":val": "true", ":admin": True},
+    )
+    items = response.get("Items", [])
+
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression="active = :val AND isAdmin = :admin",
+            ExpressionAttributeValues={":val": "true", ":admin": True},
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+
+    logger.info(f"Found {len(items)} active admins")
+    return [{"email": item["email"], "name": item.get("name")} for item in items]
+
+
 def create_game(game_date: str) -> None:
     """Create a new game with status OPEN and empty player status items."""
     config = _get_config()

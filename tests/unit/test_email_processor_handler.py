@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from email_processor.handler import handler, _extract_email_body, _extract_sender_email
+from common.email_utils import extract_email_body, extract_sender_email
+from email_processor.handler import handler
 
 
 def _make_s3_event(bucket="test-email-bucket", key="test-message-id"):
@@ -288,20 +289,20 @@ def test_handler_email_parsing():
     from email import policy
     parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
 
-    body = _extract_email_body(parsed)
+    body = extract_email_body(parsed)
     assert "I'm playing this week!" in body
 
 
 @pytest.mark.unit
-def test_extract_sender_email_with_name():
+def testextract_sender_email_with_name():
     """Test extracting email from 'Name <email>' format."""
-    assert _extract_sender_email("Alice Smith <alice@example.com>") == "alice@example.com"
+    assert extract_sender_email("Alice Smith <alice@example.com>") == "alice@example.com"
 
 
 @pytest.mark.unit
-def test_extract_sender_email_plain():
+def testextract_sender_email_plain():
     """Test extracting plain email address."""
-    assert _extract_sender_email("alice@example.com") == "alice@example.com"
+    assert extract_sender_email("alice@example.com") == "alice@example.com"
 
 
 @pytest.mark.unit
@@ -547,7 +548,7 @@ def test_html_to_text_inserts_newlines_at_block_tags():
     EmailReplyParser's line-based heuristics can later see quote markers
     that originated as <blockquote> elements.
     """
-    from email_processor.handler import _html_to_text
+    from common.email_utils import _html_to_text
 
     html = (
         '<div>I\'m in!</div>'
@@ -571,7 +572,7 @@ def test_extract_body_strips_on_wrote_quote():
     """A plain-text reply with an 'On ... wrote:' quoted block keeps only
     the new content above the quote line.
     """
-    from email_processor.handler import _extract_email_body
+
 
     body = (
         "I'm in!\n"
@@ -588,7 +589,7 @@ def test_extract_body_strips_on_wrote_quote():
     from email import policy
     parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
 
-    extracted = _extract_email_body(parsed)
+    extracted = extract_email_body(parsed)
     assert extracted.strip() == "I'm in!"
     assert "Scheduler" not in extracted
     assert "Reply YES" not in extracted
@@ -599,7 +600,7 @@ def test_extract_body_strips_gt_quoted_lines():
     """A plain-text reply where the prior message is line-quoted with '>'
     keeps only the user's new content.
     """
-    from email_processor.handler import _extract_email_body
+
 
     body = (
         "Sure I'll bring 2 friends\n"
@@ -616,7 +617,7 @@ def test_extract_body_strips_gt_quoted_lines():
     from email import policy
     parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
 
-    extracted = _extract_email_body(parsed)
+    extracted = extract_email_body(parsed)
     assert "Sure I'll bring 2 friends" in extracted
     assert "Reminder" not in extracted
     assert "Bring water" not in extracted
@@ -630,7 +631,7 @@ def test_extract_body_html_fallback_strips_quotes():
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText as MIMETextHelper
 
-    from email_processor.handler import _extract_email_body
+
 
     html = (
         '<div>I\'m in!</div>'
@@ -649,7 +650,7 @@ def test_extract_body_html_fallback_strips_quotes():
     from email import policy
     parsed = email_lib.message_from_bytes(msg.as_bytes(), policy=policy.default)
 
-    extracted = _extract_email_body(parsed)
+    extracted = extract_email_body(parsed)
     assert "I'm in!" in extracted
     assert "Are you playing" not in extracted
     assert "Scheduler" not in extracted
@@ -783,3 +784,156 @@ def test_handler_guest_join_rejected(mocker):
     mock_update.assert_not_called()
     body = mock_send.call_args[0][2]
     assert "only cancel" in body.lower() or "as a guest" in body.lower()
+
+
+# ---------------------------------------------------------------------------
+# UNSUBSCRIBE handler tests
+# ---------------------------------------------------------------------------
+
+def _make_unsubscribe_email(from_addr: str, subject: str = "UNSUBSCRIBE") -> bytes:
+    from email.mime.text import MIMEText
+    msg = MIMEText("", "plain", "utf-8")
+    msg["From"] = from_addr
+    msg["To"] = "scheduler@example.com"
+    msg["Subject"] = subject
+    return msg.as_bytes()
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_active_player(mocker):
+    """UNSUBSCRIBE subject from an active player deactivates them and sends confirmation."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("alice@example.com"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mock_deactivate = mocker.patch("email_processor.handler.deactivate_player")
+    mocker.patch("email_processor.handler.get_active_admins", return_value=[])
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"] == "Unsubscribed"
+    mock_deactivate.assert_called_once_with("alice@example.com")
+    sent_to = [c[0][0] for c in mock_send.call_args_list]
+    assert "alice@example.com" in sent_to
+    player_call = next(c for c in mock_send.call_args_list if c[0][0] == "alice@example.com")
+    assert "unsubscribed" in player_call[0][2].lower()
+    assert "organiser" in player_call[0][2].lower()
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_case_insensitive(mocker):
+    """Subject 'unsubscribe' (lowercase) triggers the same handler."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("alice@example.com", "unsubscribe"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.deactivate_player")
+    mocker.patch("email_processor.handler.get_active_admins", return_value=[])
+    mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"] == "Unsubscribed"
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_unknown_sender(mocker):
+    """UNSUBSCRIBE from an unregistered address returns 403 and sends error reply."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("nobody@example.com"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="unknown")
+    mock_deactivate = mocker.patch("email_processor.handler.deactivate_player")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 403
+    mock_deactivate.assert_not_called()
+    mock_send.assert_called_once()
+    assert "active player account" in mock_send.call_args[0][2].lower()
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_guest_sender(mocker):
+    """UNSUBSCRIBE from a guest address returns 403."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("guest@example.com"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
+    mock_deactivate = mocker.patch("email_processor.handler.deactivate_player")
+    mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 403
+    mock_deactivate.assert_not_called()
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_already_inactive(mocker):
+    """UNSUBSCRIBE when player is already inactive returns 200 with 'already' message."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("alice@example.com"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.deactivate_player", side_effect=ValueError("No active player found"))
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"] == "Already inactive"
+    mock_send.assert_called_once()
+    assert "already" in mock_send.call_args[0][2].lower()
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_does_not_call_bedrock(mocker):
+    """UNSUBSCRIBE must short-circuit before any Bedrock call."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("alice@example.com"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.deactivate_player")
+    mocker.patch("email_processor.handler.get_active_admins", return_value=[])
+    mocker.patch("email_processor.handler.send_email")
+    mock_bedrock = mocker.patch("email_processor.handler.parse_player_email")
+
+    handler(_make_s3_event(), None)
+
+    mock_bedrock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_handler_unsubscribe_notifies_all_admins(mocker):
+    """All active admins in the players table are notified when a player unsubscribes."""
+    import io
+    mock_s3 = mocker.MagicMock()
+    mock_s3.get_object.return_value = {"Body": io.BytesIO(_make_unsubscribe_email("alice@example.com"))}
+    mocker.patch("email_processor.handler._get_s3_client", return_value=mock_s3)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.deactivate_player")
+    mocker.patch("email_processor.handler.get_active_admins", return_value=[
+        {"email": "admin1@example.com", "name": "Admin One"},
+        {"email": "admin2@example.com", "name": "Admin Two"},
+    ])
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    sent_to = [c[0][0] for c in mock_send.call_args_list]
+    assert "admin1@example.com" in sent_to
+    assert "admin2@example.com" in sent_to
+    admin_call = next(c for c in mock_send.call_args_list if c[0][0] == "admin1@example.com")
+    assert "alice@example.com" in admin_call[0][2]
