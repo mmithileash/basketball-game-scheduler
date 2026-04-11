@@ -1,11 +1,12 @@
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
 
 from common.config import load_config
+from common.date_utils import next_saturday
 
 logger = logging.getLogger(__name__)
 
@@ -243,12 +244,6 @@ def update_game_status(game_date: str, status: str) -> None:
     logger.info("Updated game %s status to %s", game_date, status)
 
 
-def _next_saturday(today: date) -> date:
-    """Return the date of the coming Saturday (or today if today is Saturday)."""
-    days_ahead = (5 - today.weekday()) % 7
-    return today + timedelta(days=days_ahead)
-
-
 def get_upcoming_game() -> dict[str, Any] | None:
     """Get the gameStatus item for the upcoming Saturday regardless of status.
 
@@ -258,8 +253,7 @@ def get_upcoming_game() -> dict[str, Any] | None:
     instead; callers that need to react differently to a cancelled game (e.g.
     the email processor) should use this function and branch on ``status``.
     """
-    saturday = _next_saturday(date.today())
-    return get_game_status(saturday.isoformat())
+    return get_game_status(next_saturday().isoformat())
 
 
 def get_current_open_game() -> dict[str, Any] | None:
