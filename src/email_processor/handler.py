@@ -1,9 +1,5 @@
-import email
 import logging
-from email import policy
 from typing import Any
-
-import boto3
 
 from common.bedrock_client import parse_player_email
 from common.dynamo import (
@@ -21,7 +17,7 @@ from common.dynamo import (
     remove_sponsor_guests_from_status,
     update_player_response,
 )
-from common.email_utils import extract_email_body, extract_sender_email
+from common.email_utils import fetch_email_from_s3
 from common.email_service import (
     send_email,
     send_guest_cancelled_sponsor_notification,
@@ -30,26 +26,6 @@ from common.email_service import (
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-_s3_client = None
-
-
-def _get_s3_client():
-    global _s3_client
-    if _s3_client is None:
-        _s3_client = boto3.client("s3")
-    return _s3_client
-
-
-def _fetch_email_from_s3(bucket: str, key: str) -> tuple[str, str, str]:
-    """Fetch a raw email from S3 and return (sender_email, subject, body)."""
-    response = _get_s3_client().get_object(Bucket=bucket, Key=key)
-    msg = email.message_from_bytes(response["Body"].read(), policy=policy.default)
-    return (
-        extract_sender_email(msg.get("From", "")),
-        msg.get("Subject", ""),
-        extract_email_body(msg),
-    )
 
 
 def _find_player_status(sender_email: str, roster: dict[str, Any]) -> str | None:
@@ -263,7 +239,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     key = s3_record["object"]["key"]
 
     logger.info("Processing email from S3: %s/%s", bucket, key)
-    sender_email, subject, body = _fetch_email_from_s3(bucket, key)
+    sender_email, subject, body = fetch_email_from_s3(bucket, key)
     logger.info("Email from %s, subject: %s", sender_email, subject)
 
     if subject.strip().upper() == "UNSUBSCRIBE":
