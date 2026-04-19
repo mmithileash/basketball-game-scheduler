@@ -16,11 +16,11 @@ locals {
     GAME_LOCATION    = var.game_location
     BEDROCK_MODEL_ID = var.bedrock_model_id
     MIN_PLAYERS      = tostring(var.min_players)
+    ADMIN_EMAIL = var.admin_email
   }
 
   lambda_admin_env_vars = merge(local.lambda_env_vars, {
     SENDER_EMAIL = var.admin_email,
-    ADMIN_EMAIL = var.admin_email
   })
 }
 

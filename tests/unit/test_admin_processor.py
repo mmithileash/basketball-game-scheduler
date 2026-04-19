@@ -101,9 +101,9 @@ def test_cancel_game_open_updates_status_and_broadcasts(mocker):
     assert result["statusCode"] == 200
     mock_update.assert_called_once_with("2026-04-11", "CANCELLED")
     assert mock_send.call_count == 3
-    mock_send.assert_any_call("alice@example.com", "2026-04-11")
-    mock_send.assert_any_call("bob@example.com", "2026-04-11")
-    mock_send.assert_any_call("charlie@example.com", "2026-04-11")
+    mock_send.assert_any_call("alice@example.com", "2026-04-11", include_unsubscribe=True)
+    mock_send.assert_any_call("bob@example.com", "2026-04-11", include_unsubscribe=True)
+    mock_send.assert_any_call("charlie@example.com", "2026-04-11", include_unsubscribe=True)
     mock_send_email.assert_called_once()
 
 
@@ -288,3 +288,49 @@ def test_cancel_game_notifies_guests_with_contact_email(mocker):
     assert "john@example.com" in broadcast_recipients
     # Jane has no own email (sk=guest#active#Jane), should NOT get a direct email
     assert broadcast_recipients == {"alice@example.com", "john@example.com"}
+
+
+@pytest.mark.unit
+def test_cancel_game_broadcast_includes_unsubscribe_for_players_not_guests(mocker):
+    """Players notified of admin cancellation receive the unsubscribe footer; guests do not."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "CANCEL_GAME",
+        "game_date": "2026-04-19",
+        "email": None,
+        "name": None,
+        "is_admin": None,
+    })
+    mocker.patch("admin_processor.handler.get_game_status",
+                 return_value={"status": "OPEN"})
+    mocker.patch("admin_processor.handler.update_game_status")
+    mocker.patch("admin_processor.handler.get_roster", return_value={
+        "YES": {
+            "players": {"alice@example.com": {"name": "Alice"}},
+            "guests": [
+                {"pk": "john@example.com", "sk": "guest#active", "name": "John",
+                 "sponsorEmail": "alice@example.com", "sponsorName": "Alice"},
+            ],
+        },
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mock_broadcast = mocker.patch("admin_processor.handler.send_admin_cancelled_broadcast")
+    mocker.patch("admin_processor.handler.send_email")
+    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
+    mock_s3.return_value.get_object.return_value = {
+        "Body": MagicMock(read=lambda: (
+            b"From: admin@example.com\r\nTo: x\r\nSubject: Cancel\r\n\r\nCancel 2026-04-19"
+        ))
+    }
+
+    handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    # Player call must include include_unsubscribe=True
+    player_calls = [c for c in mock_broadcast.call_args_list if c[0][0] == "alice@example.com"]
+    assert len(player_calls) == 1
+    assert player_calls[0].kwargs.get("include_unsubscribe") is True
+
+    # Guest call must NOT set include_unsubscribe=True
+    guest_calls = [c for c in mock_broadcast.call_args_list if c[0][0] == "john@example.com"]
+    assert len(guest_calls) == 1
+    assert not guest_calls[0].kwargs.get("include_unsubscribe", False)

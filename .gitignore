@@ -1,3 +1,4 @@
+.worktrees/
 .terraform/
 .terraform.lock.hcl
 terraform.tfstate

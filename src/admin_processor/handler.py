@@ -17,6 +17,7 @@ from common.dynamo import (
     update_game_status,
 )
 from common.email_service import send_admin_cancelled_broadcast, send_email
+from common.email_utils import extract_email_body, extract_sender_email
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -30,12 +31,6 @@ def _get_s3_client():
         _s3_client = boto3.client("s3")
     return _s3_client
 
-
-def _extract_sender_email(from_header: str) -> str:
-    """Extract the email address from a From header value."""
-    if "<" in from_header and ">" in from_header:
-        return from_header.split("<")[1].split(">")[0].strip()
-    return from_header.strip()
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -54,7 +49,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     from_header = msg.get("From", "")
     subject = msg.get("Subject", "Admin Command")
 
-    sender_email = _extract_sender_email(from_header)
+    sender_email = extract_sender_email(from_header)
     logger.info(f"Admin email from {sender_email}, subject: {subject}")
 
     if not is_admin(sender_email):
@@ -67,18 +62,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return {"statusCode": 403, "body": "Not authorised"}
 
-    # Extract body
-    if msg.is_multipart():
-        body = ""
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                payload = part.get_payload(decode=True)
-                if payload:
-                    body = payload.decode("utf-8", errors="replace")
-                    break
-    else:
-        payload = msg.get_payload(decode=True)
-        body = payload.decode("utf-8", errors="replace") if payload else ""
+    body = extract_email_body(msg)
 
     parsed = parse_admin_email(body, sender_email)
     intent = parsed["intent"]
@@ -115,7 +99,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             notified: set[str] = set()
             for status_key in ("YES", "MAYBE"):
                 for player_email in roster.get(status_key, {}).get("players", {}).keys():
-                    send_admin_cancelled_broadcast(player_email, game_date)
+                    send_admin_cancelled_broadcast(player_email, game_date, include_unsubscribe=True)
                     notified.add(player_email)
                 for guest in roster.get(status_key, {}).get("guests", []):
                     if guest.get("sk") == "guest#active":
