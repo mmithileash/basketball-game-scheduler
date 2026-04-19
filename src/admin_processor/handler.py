@@ -1,9 +1,5 @@
-import email
 import logging
-from email import policy
 from typing import Any
-
-import boto3
 
 from common.bedrock_client import parse_admin_email
 from common.dynamo import (
@@ -17,20 +13,10 @@ from common.dynamo import (
     update_game_status,
 )
 from common.email_service import send_admin_cancelled_broadcast, send_email
-from common.email_utils import extract_email_body, extract_sender_email
+from common.email_utils import fetch_email_from_s3
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-_s3_client = None
-
-
-def _get_s3_client():
-    global _s3_client
-    if _s3_client is None:
-        _s3_client = boto3.client("s3")
-    return _s3_client
-
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -41,15 +27,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     logger.info(f"Processing admin email from S3: {bucket}/{key}")
 
-    s3_client = _get_s3_client()
-    response = s3_client.get_object(Bucket=bucket, Key=key)
-    raw_email = response["Body"].read()
-
-    msg = email.message_from_bytes(raw_email, policy=policy.default)
-    from_header = msg.get("From", "")
-    subject = msg.get("Subject", "Admin Command")
-
-    sender_email = extract_sender_email(from_header)
+    sender_email, subject, body = fetch_email_from_s3(bucket, key)
+    if not subject:
+        subject = "Admin Command"
     logger.info(f"Admin email from {sender_email}, subject: {subject}")
 
     if not is_admin(sender_email):
@@ -61,8 +41,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "Please contact the organiser if you believe this is an error.",
         )
         return {"statusCode": 403, "body": "Not authorised"}
-
-    body = extract_email_body(msg)
 
     parsed = parse_admin_email(body, sender_email)
     intent = parsed["intent"]
