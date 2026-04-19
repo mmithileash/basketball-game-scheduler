@@ -1,4 +1,6 @@
+import html
 import logging
+import re
 from typing import Any
 
 import boto3
@@ -36,8 +38,16 @@ def _unsubscribe_footer() -> str:
     )
 
 
+def _text_to_html(text: str) -> str:
+    """Convert a plain-text email body to basic HTML, making mailto: links clickable."""
+    escaped = html.escape(text)
+    escaped = re.sub(r"(mailto:[^\s]+)", r'<a href="\1">Unsubscribe</a>', escaped)
+    escaped = escaped.replace("\n", "<br>\n")
+    return f"<html><body>{escaped}</body></html>"
+
+
 def send_email(to: str, subject: str, body: str) -> None:
-    """Send an email via SES."""
+    """Send an email via SES with both plain-text and HTML parts."""
     config = _get_config()
     client = _get_ses_client()
 
@@ -46,10 +56,13 @@ def send_email(to: str, subject: str, body: str) -> None:
         Destination={"ToAddresses": [to]},
         Message={
             "Subject": {"Data": subject, "Charset": "UTF-8"},
-            "Body": {"Text": {"Data": body, "Charset": "UTF-8"}},
+            "Body": {
+                "Text": {"Data": body, "Charset": "UTF-8"},
+                "Html": {"Data": _text_to_html(body), "Charset": "UTF-8"},
+            },
         },
     )
-    logger.info("Sent email to %s: %s", to, subject)
+    logger.info(f"Sent email to {to}: {subject}")
 
 
 def send_announcement(
