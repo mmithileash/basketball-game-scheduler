@@ -1,19 +1,42 @@
+import json
 import logging
+import os
+from datetime import date, timedelta
 from typing import Any
 
+import boto3
+
 from common.bedrock_client import parse_admin_email
+from common.date_utils import sfn_timestamps_for_game, week_start_for_date
 from common.dynamo import (
     add_player,
+    create_game,
     deactivate_player,
+    get_active_players,
     get_game_status,
     get_roster,
     is_admin,
     pre_cancel_game,
     reactivate_player,
+    set_week_no_game,
     update_game_status,
 )
-from common.email_service import send_admin_cancelled_broadcast, send_email
+from common.email_service import (
+    send_admin_cancelled_broadcast,
+    send_email,
+    send_no_game_this_week,
+)
 from common.email_utils import fetch_email_from_s3
+
+_s3_client = None
+_sfn_client = None
+
+
+def _get_sfn_client():
+    global _sfn_client
+    if _sfn_client is None:
+        _sfn_client = boto3.client("stepfunctions")
+    return _sfn_client
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -47,7 +70,69 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     logger.info(f"Admin intent from {sender_email}: {intent}")
 
-    if intent == "CANCEL_GAME":
+    if intent == "SCHEDULE_GAMES":
+        games_to_schedule = parsed.get("games", [])
+        if not games_to_schedule:
+            send_email(
+                sender_email,
+                f"Re: {subject}",
+                "I couldn't parse any game dates from your message. "
+                "Please specify dates like 'Tuesday July 7' or 'Saturday July 12'.",
+            )
+            return {"statusCode": 200, "body": "No games parsed"}
+
+        sfn_arn = os.environ.get("GAME_LIFECYCLE_SFN_ARN")
+        sfn = _get_sfn_client() if sfn_arn else None
+        scheduled: list[str] = []
+
+        for game_info in games_to_schedule:
+            game_date = game_info.get("date")
+            if not game_date:
+                continue
+            create_game(game_date)
+            if sfn and sfn_arn:
+                execution_input = sfn_timestamps_for_game(game_date)
+                try:
+                    sfn.start_execution(
+                        stateMachineArn=sfn_arn,
+                        name=f"game-{game_date}",
+                        input=json.dumps(execution_input),
+                    )
+                    logger.info(f"Started SFN execution game-{game_date}")
+                except sfn.exceptions.ExecutionAlreadyExists:
+                    logger.info(f"SFN execution game-{game_date} already exists, skipping")
+            scheduled.append(game_date)
+            logger.info(f"Scheduled game for {game_date}")
+
+        send_email(
+            sender_email,
+            f"Re: {subject}",
+            f"Done. Scheduled {len(scheduled)} game(s): {', '.join(scheduled)}. "
+            f"Players will be notified 7 days before each game.",
+        )
+
+    elif intent == "NO_GAMES_THIS_WEEK":
+        today = date.today()
+        week_start_str = week_start_for_date(today + timedelta(days=7)).isoformat()
+        set_week_no_game(week_start_str, "admin_declined")
+
+        players = get_active_players()
+        for player in players:
+            try:
+                send_no_game_this_week(
+                    player["email"], player.get("name"), week_start_str, "admin_declined"
+                )
+            except Exception:
+                logger.error(f"Failed to notify {player['email']}", exc_info=True)
+
+        send_email(
+            sender_email,
+            f"Re: {subject}",
+            f"Done. Players have been notified there are no games this week ({week_start_str}).",
+        )
+        logger.info(f"Admin declined games for week {week_start_str}, notified {len(players)} player(s)")
+
+    elif intent == "CANCEL_GAME":
         game_date = parsed.get("game_date")
         if not game_date:
             send_email(
@@ -72,6 +157,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         elif existing.get("status") == "OPEN":
             update_game_status(game_date, "CANCELLED")
+            _stop_game_sfn_execution(game_date)
             roster = get_roster(game_date)
 
             notified: set[str] = set()
@@ -167,6 +253,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             sender_email,
             f"Re: {subject}",
             "I couldn't understand that command. Available commands:\n"
+            "- Schedule games: 'Tuesday and Saturday'\n"
+            "- No games this week\n"
             "- Cancel the game on [date]\n"
             "- Add player [email], name [name]\n"
             "- Add admin [email], name [name]\n"
@@ -175,3 +263,22 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
     return {"statusCode": 200, "body": {"intent": intent}}
+
+
+def _stop_game_sfn_execution(game_date: str) -> None:
+    """Stop the SFN execution for a game, silently ignoring if not found."""
+    sfn_arn = os.environ.get("GAME_LIFECYCLE_SFN_ARN")
+    if not sfn_arn:
+        return
+    execution_arn = sfn_arn.replace(":stateMachine:", ":execution:") + f":game-{game_date}"
+    try:
+        _get_sfn_client().stop_execution(
+            executionArn=execution_arn,
+            cause="Admin cancelled game",
+        )
+        logger.info(f"Stopped SFN execution game-{game_date}")
+    except Exception as e:
+        if "ExecutionDoesNotExist" in type(e).__name__ or "does not exist" in str(e).lower():
+            logger.info(f"SFN execution game-{game_date} not found (already finished or not started)")
+        else:
+            logger.warning(f"Failed to stop SFN execution game-{game_date}: {e}")
