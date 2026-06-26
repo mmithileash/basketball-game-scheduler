@@ -61,11 +61,11 @@ def send_announcement(
     config = _get_config()
     greeting = f"Hi {player_name}" if player_name else "Hi"
 
-    subject = f"Basketball Game - {game_date}"
+    subject = f"Basketball Game - {game_date} [Game: {game_date}]"
     body = (
         f"{greeting},\n\n"
         f"A basketball game has been scheduled!\n\n"
-        f"Date: {game_date} (Saturday)\n"
+        f"Date: {game_date}\n"
         f"Time: {config.game_time}\n"
         f"Location: {config.game_location}\n\n"
         f"Please reply to this email to let us know if you can make it.\n"
@@ -74,7 +74,7 @@ def send_announcement(
         f"  - \"Can't make it\" or \"No\" to decline\n"
         f"  - \"Maybe\" if you're unsure\n"
         f"  - \"I'm bringing 2 guests: John, Jane\" to bring guests\n\n"
-        f"We need at least 6 players to play. Looking forward to it!\n"
+        f"We need at least {config.min_players} players to play. Looking forward to it!\n"
     )
 
     send_email(player_email, subject, body + _unsubscribe_footer())
@@ -89,7 +89,7 @@ def send_reminder(
     """Send reminder email with current confirmed count."""
     greeting = f"Hi {player_name}" if player_name else "Hi"
 
-    subject = f"Reminder: Basketball Game - {game_date}"
+    subject = f"Reminder: Basketball Game - {game_date} [Game: {game_date}]"
     body = (
         f"{greeting},\n\n"
         f"This is a reminder about the basketball game on {game_date}.\n\n"
@@ -104,7 +104,7 @@ def send_reminder(
 
 def send_cancellation(player_email: str, game_date: str) -> None:
     """Send game cancellation notice."""
-    subject = f"Cancelled: Basketball Game - {game_date}"
+    subject = f"Cancelled: Basketball Game - {game_date} [Game: {game_date}]"
     body = (
         f"Hi,\n\n"
         f"Unfortunately, the basketball game scheduled for {game_date} "
@@ -124,7 +124,7 @@ def send_confirmation(
     """Send final confirmation with roster to confirmed players."""
     config = _get_config()
 
-    subject = f"Confirmed: Basketball Game - {game_date}"
+    subject = f"Confirmed: Basketball Game - {game_date} [Game: {game_date}]"
 
     yes_data = roster.get("YES", {})
     lines: list[str] = []
@@ -208,6 +208,103 @@ def send_guest_cancelled_sponsor_notification(
     )
 
     send_email(sponsor_email, subject, body + _unsubscribe_footer())
+
+
+def send_admin_weekly_prompt(admin_email: str, week_start_date: str) -> None:
+    """Ask the admin whether to schedule games for the upcoming week."""
+    subject = f"Schedule games for week of {week_start_date}?"
+    body = (
+        f"Hi,\n\n"
+        f"Would you like to schedule any basketball games for the week of {week_start_date}?\n\n"
+        f"Reply with the dates and optionally times "
+        f"(e.g. 'Tuesday and Saturday' or 'Thursday 7PM'). "
+        f"If no time is given, the default is 11:00 AM UTC.\n\n"
+        f"To skip this week, reply 'No games this week'.\n\n"
+        f"Please reply by Tuesday 9PM UTC.\n"
+    )
+    send_email(admin_email, subject, body)
+
+
+def send_no_game_this_week(
+    player_email: str,
+    player_name: str | None,
+    week_start_date: str,
+    reason: str,
+) -> None:
+    """Notify a player that no games are scheduled for the given week."""
+    greeting = f"Hi {player_name}" if player_name else "Hi"
+    subject = f"No Games This Week ({week_start_date})"
+    if reason == "admin_declined":
+        detail = "The organiser has confirmed there are no games scheduled this week."
+    else:
+        detail = "No games were scheduled for this week."
+    body = (
+        f"{greeting},\n\n"
+        f"{detail}\n\n"
+        f"See you next week!\n"
+    )
+    send_email(player_email, subject, body + _unsubscribe_footer())
+
+
+def send_tentative_announcement(
+    player_email: str,
+    player_name: str | None,
+    game_date: str,
+    long_game_threshold: int,
+) -> None:
+    """Send game announcement with tentative duration info."""
+    config = _get_config()
+    greeting = f"Hi {player_name}" if player_name else "Hi"
+    subject = f"Basketball Game - {game_date} [Game: {game_date}]"
+    body = (
+        f"{greeting},\n\n"
+        f"A basketball game has been scheduled!\n\n"
+        f"Date: {game_date}\n"
+        f"Time: {config.game_time}\n"
+        f"Location: {config.game_location}\n\n"
+        f"Tentative duration: 1 hour "
+        f"(2 hours if {long_game_threshold}+ players confirm).\n\n"
+        f"Please reply to let us know if you can make it:\n"
+        f"  - \"I'm in\" or \"Yes\" to join\n"
+        f"  - \"Can't make it\" or \"No\" to decline\n"
+        f"  - \"Maybe\" if you're unsure\n"
+        f"  - \"I'm bringing 2 guests: John, Jane\" to bring guests\n\n"
+        f"We need at least {config.min_players} players to play.\n"
+    )
+    send_email(player_email, subject, body + _unsubscribe_footer())
+
+
+def send_final_confirmation_with_duration(
+    player_email: str,
+    game_date: str,
+    roster: dict[str, Any],
+    duration_hours: int,
+) -> None:
+    """Send final game confirmation with locked-in duration."""
+    config = _get_config()
+    subject = f"Confirmed: Basketball Game - {game_date} [Game: {game_date}]"
+
+    yes_data = roster.get("YES", {})
+    lines: list[str] = []
+    for email, data in yes_data.get("players", {}).items():
+        name = data.get("name") or email
+        lines.append(f"  - {name} ({email})")
+    for guest in yes_data.get("guests", []):
+        lines.append(f"    + Guest: {guest['name']} (via {guest['sponsorName']})")
+
+    roster_text = "\n".join(lines) if lines else "  (none)"
+    duration_label = f"{duration_hours} hour{'s' if duration_hours > 1 else ''}"
+
+    body = (
+        f"Hi,\n\n"
+        f"The basketball game is ON for {game_date}!\n\n"
+        f"Time: {config.game_time}\n"
+        f"Duration: {duration_label}\n"
+        f"Location: {config.game_location}\n\n"
+        f"Confirmed players:\n{roster_text}\n\n"
+        f"See you there!\n"
+    )
+    send_email(player_email, subject, body + _unsubscribe_footer())
 
 
 def send_admin_cancelled_broadcast(player_email: str, game_date: str, include_unsubscribe: bool = False) -> None:

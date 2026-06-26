@@ -15,14 +15,17 @@ from common.dynamo import (
     get_active_players,
     get_current_open_game,
     get_game_status,
+    get_open_games,
     get_pending_players,
     get_player_name,
     get_roster,
+    get_week_status,
     is_admin,
     move_confirmed_guests,
     pre_cancel_game,
     reactivate_player,
     remove_sponsor_guests_from_status,
+    set_week_no_game,
     update_game_status,
     update_player_response,
 )
@@ -780,3 +783,116 @@ def test_remove_guest_from_status_not_found(sample_game_date):
 
     result = remove_guest_from_status(sample_game_date, "YES", "nobody@example.com")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# weekStatus helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_increments_week_game_count(sample_game_date):
+    """create_game atomically creates weekStatus item with gameCount=1."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game(sample_game_date)  # 2026-03-28 → week 2026-03-23
+
+    week_status = get_week_status("2026-03-23")
+    assert week_status is not None
+    assert int(week_status["gameCount"]) == 1
+    assert week_status["adminResponded"] is True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_twice_increments_game_count():
+    """Creating two games in the same week increments gameCount to 2."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-03-24")  # Tuesday — week 2026-03-23
+    create_game("2026-03-28")  # Saturday — same week
+
+    week_status = get_week_status("2026-03-23")
+    assert int(week_status["gameCount"]) == 2
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_week_status_returns_none_when_missing():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert get_week_status("2026-03-23") is None
+
+
+@pytest.mark.unit
+@mock_aws
+def test_set_week_no_game_sets_responded_and_reason():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    set_week_no_game("2026-03-23", "no_response")
+
+    week_status = get_week_status("2026-03-23")
+    assert week_status is not None
+    assert week_status["adminResponded"] is True
+    assert week_status["reason"] == "no_response"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_set_week_no_game_admin_declined():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    set_week_no_game("2026-03-23", "admin_declined")
+
+    week_status = get_week_status("2026-03-23")
+    assert week_status["reason"] == "admin_declined"
+
+
+# ---------------------------------------------------------------------------
+# get_open_games
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_get_open_games_returns_all_open():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-07-07")
+    create_game("2026-07-10")
+
+    open_games = get_open_games()
+    dates = {g["gameDate"] for g in open_games}
+    assert dates == {"2026-07-07", "2026-07-10"}
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_open_games_excludes_cancelled_and_played():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-07-07")
+    create_game("2026-07-10")
+    create_game("2026-07-14")
+
+    update_game_status("2026-07-07", "CANCELLED")
+    update_game_status("2026-07-10", "PLAYED")
+
+    open_games = get_open_games()
+    assert len(open_games) == 1
+    assert open_games[0]["gameDate"] == "2026-07-14"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_open_games_returns_empty_when_none():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert get_open_games() == []

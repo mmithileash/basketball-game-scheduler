@@ -13,6 +13,8 @@ class Config:
     game_location: str
     bedrock_model_id: str
     min_players: int
+    long_game_threshold: int
+    max_games_per_week: int
 
 
 def load_config() -> Config:
@@ -28,4 +30,6 @@ def load_config() -> Config:
             "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
         ),
         min_players=int(os.environ.get("MIN_PLAYERS", "6")),
+        long_game_threshold=int(os.environ.get("LONG_GAME_THRESHOLD", "10")),
+        max_games_per_week=int(os.environ.get("MAX_GAMES_PER_WEEK", "1")),
     )

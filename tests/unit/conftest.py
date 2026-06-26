@@ -16,6 +16,9 @@ def set_env_vars(monkeypatch):
     monkeypatch.setenv("GAME_TIME", "10:00 AM")
     monkeypatch.setenv("GAME_LOCATION", "Main Court")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+    monkeypatch.setenv("LONG_GAME_THRESHOLD", "10")
+    monkeypatch.setenv("MAX_GAMES_PER_WEEK", "1")
+    monkeypatch.setenv("GAME_LIFECYCLE_SFN_ARN", "arn:aws:states:eu-west-1:123456789012:stateMachine:basketball-game-lifecycle")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
@@ -38,6 +41,7 @@ def set_env_vars(monkeypatch):
     try:
         import admin_processor.handler as admin_mod
         admin_mod._s3_client = None
+        admin_mod._sfn_client = None
     except ImportError:
         pass
 

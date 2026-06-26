@@ -1,12 +1,11 @@
 import json
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import boto3
 
 from common.config import load_config
-from common.date_utils import next_saturday
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -181,27 +180,34 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
     """Use Bedrock Claude to parse an admin command email into a structured intent.
 
     Returns: {
-        "intent": str,  # CANCEL_GAME, ADD_PLAYER, ADD_ADMIN, DEACTIVATE_PLAYER, REACTIVATE_PLAYER, UNKNOWN
-        "game_date": str | None,   # YYYY-MM-DD Saturday, for CANCEL_GAME
+        "intent": str,  # CANCEL_GAME, SCHEDULE_GAMES, NO_GAMES_THIS_WEEK,
+                        # ADD_PLAYER, ADD_ADMIN, DEACTIVATE_PLAYER, REACTIVATE_PLAYER, UNKNOWN
+        "game_date": str | None,   # YYYY-MM-DD, for CANCEL_GAME
         "email": str | None,       # Target player email, for player management commands
         "name": str | None,        # Player name, for ADD_PLAYER / ADD_ADMIN
         "is_admin": bool | None,   # True for ADD_ADMIN
+        "games": list[{"date": str, "time": str}],  # for SCHEDULE_GAMES
     }
     """
     config = _get_config()
     client = _get_bedrock_client()
 
     today = date.today()
-    upcoming_saturday = next_saturday()
+    upcoming_dates = [
+        f"{(today + timedelta(days=i)).isoformat()} ({(today + timedelta(days=i)).strftime('%A')})"
+        for i in range(1, 15)
+    ]
 
     system_prompt = (
         "You are an admin command parser for a basketball game scheduling system. "
         "Parse the admin's email and return a structured JSON command.\n\n"
         f"Admin sender: {sender_email}\n"
         f"Today's date: {today.isoformat()} ({today.strftime('%A')})\n"
-        f"Next upcoming Saturday (the next scheduled game): {upcoming_saturday.isoformat()}\n\n"
+        f"Upcoming 14 days: {', '.join(upcoming_dates)}\n\n"
         "Available intents:\n"
-        "- CANCEL_GAME: Admin wants to cancel a game for a specific Saturday\n"
+        "- SCHEDULE_GAMES: Admin wants to schedule one or more games for specific dates\n"
+        "- NO_GAMES_THIS_WEEK: Admin explicitly declines to schedule any games this week\n"
+        "- CANCEL_GAME: Admin wants to cancel an already-announced game\n"
         "- ADD_PLAYER: Admin wants to add a new regular player\n"
         "- ADD_ADMIN: Admin wants to add a new admin player\n"
         "- DEACTIVATE_PLAYER: Admin wants to deactivate/remove a player\n"
@@ -210,15 +216,16 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         "Respond with ONLY a JSON object (no markdown, no explanation):\n"
         '{{\n'
         '  "intent": "...",\n'
-        '  "game_date": "YYYY-MM-DD or null — must be a Saturday, resolve to nearest Saturday if needed",\n'
+        '  "game_date": "YYYY-MM-DD or null",\n'
         '  "email": "player email or null",\n'
         '  "name": "player name or null",\n'
-        '  "is_admin": true/false/null\n'
+        '  "is_admin": true/false/null,\n'
+        '  "games": [{{"date": "YYYY-MM-DD", "time": "HH:MM UTC"}}]\n'
         '}}\n\n'
-        "For CANCEL_GAME: set game_date to the Saturday being cancelled (YYYY-MM-DD). "
-        "If the date mentioned is not a Saturday, resolve it to that week's Saturday. "
-        f"If the admin uses a relative reference like 'latest', 'upcoming', 'next', or 'this Saturday', "
-        f"resolve it to the next upcoming Saturday ({upcoming_saturday.isoformat()}). "
+        "For SCHEDULE_GAMES: populate 'games' with each game's date and time. "
+        "If no time is mentioned, default to '11:00 UTC'. Games can be on any day of the week.\n"
+        "For NO_GAMES_THIS_WEEK: set games to [].\n"
+        "For CANCEL_GAME: set game_date to the date being cancelled (YYYY-MM-DD). "
         "If you truly cannot determine the date, set game_date to null.\n"
         "For ADD_ADMIN: set is_admin to true.\n"
         "For ADD_PLAYER: set is_admin to false.\n"
@@ -227,7 +234,7 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
 
     request_body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 256,
+        "max_tokens": 512,
         "system": system_prompt,
         "messages": [
             {"role": "user", "content": email_body},
@@ -254,6 +261,7 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
             "email": result.get("email"),
             "name": result.get("name"),
             "is_admin": result.get("is_admin"),
+            "games": result.get("games", []),
         }
 
     except json.JSONDecodeError as e:
@@ -264,6 +272,7 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
             "email": None,
             "name": None,
             "is_admin": None,
+            "games": [],
         }
     except Exception as e:
         logger.error(f"Error calling Bedrock for admin command: {e}", exc_info=True)
@@ -273,4 +282,5 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
             "email": None,
             "name": None,
             "is_admin": None,
+            "games": [],
         }

@@ -4,13 +4,17 @@ from moto import mock_aws
 
 from common.email_service import (
     send_admin_cancelled_broadcast,
+    send_admin_weekly_prompt,
     send_announcement,
     send_cancellation,
     send_confirmation,
     send_email,
+    send_final_confirmation_with_duration,
     send_guest_followup,
     send_no_game_announcement,
+    send_no_game_this_week,
     send_reminder,
+    send_tentative_announcement,
 )
 
 
@@ -399,3 +403,97 @@ def test_unsubscribe_footer_present_when_requested_in_admin_cancelled_broadcast(
     send_admin_cancelled_broadcast("player@example.com", "2026-04-12", include_unsubscribe=True)
     body = mock_send.call_args[0][2]
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
+
+
+# ---------------------------------------------------------------------------
+# New email templates
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_send_admin_weekly_prompt_sent_to_admin(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_admin_weekly_prompt("admin@example.com", "2026-07-06")
+    mock_send.assert_called_once()
+    to, subject, body = mock_send.call_args[0]
+    assert to == "admin@example.com"
+    assert "2026-07-06" in subject
+    assert "Tuesday 9PM UTC" in body
+
+
+@pytest.mark.unit
+def test_send_no_game_this_week_no_response(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_no_game_this_week("player@example.com", "Alice", "2026-07-06", "no_response")
+    to, subject, body = mock_send.call_args[0]
+    assert to == "player@example.com"
+    assert "No Games" in subject
+    assert "Hi Alice" in body
+    assert "No games were scheduled" in body
+
+
+@pytest.mark.unit
+def test_send_no_game_this_week_admin_declined(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_no_game_this_week("player@example.com", None, "2026-07-06", "admin_declined")
+    _, _, body = mock_send.call_args[0]
+    assert "organiser has confirmed" in body
+    assert "Hi None" not in body
+
+
+@pytest.mark.unit
+def test_send_tentative_announcement_contains_threshold(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", long_game_threshold=10)
+    to, subject, body = mock_send.call_args[0]
+    assert "[Game: 2026-07-07]" in subject
+    assert "10+" in body
+    assert "Tentative duration" in body
+    assert "Hi Alice" in body
+
+
+@pytest.mark.unit
+def test_send_final_confirmation_with_duration_1hr(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    roster = {
+        "YES": {"players": {"alice@example.com": {"name": "Alice"}}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+    send_final_confirmation_with_duration("alice@example.com", "2026-07-07", roster, duration_hours=1)
+    _, subject, body = mock_send.call_args[0]
+    assert "[Game: 2026-07-07]" in subject
+    assert "1 hour" in body
+    assert "Alice" in body
+
+
+@pytest.mark.unit
+def test_send_final_confirmation_with_duration_2hr(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    roster = {"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}}
+    send_final_confirmation_with_duration("player@example.com", "2026-07-07", roster, duration_hours=2)
+    _, _, body = mock_send.call_args[0]
+    assert "2 hours" in body
+
+
+@pytest.mark.unit
+def test_game_marker_in_announcement_subject(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_announcement("player@example.com", "Alice", "2026-07-07")
+    _, subject, _ = mock_send.call_args[0]
+    assert "[Game: 2026-07-07]" in subject
+
+
+@pytest.mark.unit
+def test_game_marker_in_reminder_subject(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_reminder("player@example.com", "Alice", 3, "2026-07-07")
+    _, subject, _ = mock_send.call_args[0]
+    assert "[Game: 2026-07-07]" in subject
+
+
+@pytest.mark.unit
+def test_game_marker_in_cancellation_subject(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_cancellation("player@example.com", "2026-07-07")
+    _, subject, _ = mock_send.call_args[0]
+    assert "[Game: 2026-07-07]" in subject

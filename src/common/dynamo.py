@@ -6,7 +6,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from common.config import load_config
-from common.date_utils import next_saturday
+from common.date_utils import next_saturday, week_start_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -84,56 +84,74 @@ def get_active_admins() -> list[dict[str, Any]]:
 
 
 def create_game(game_date: str) -> None:
-    """Create a new game with status OPEN and empty player status items."""
+    """Create a new game with status OPEN and atomically increment the week's gameCount."""
     config = _get_config()
     client = _get_client()
     now = datetime.now(timezone.utc).isoformat()
+    week_start = week_start_for_date(date.fromisoformat(game_date)).isoformat()
 
-    items = [
+    client.transact_write_items(TransactItems=[
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
                     "gameDate": {"S": game_date},
                     "sk": {"S": "gameStatus"},
                     "status": {"S": "OPEN"},
                     "createdAt": {"S": now},
-                }
+                },
             }
         },
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#YES"},
                     "players": {"M": {}},
                     "guests": {"L": []},
-                }
+                },
             }
         },
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#NO"},
                     "players": {"M": {}},
                     "guests": {"L": []},
-                }
+                },
             }
         },
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
                     "gameDate": {"S": game_date},
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
                     "guests": {"L": []},
-                }
+                },
             }
         },
-    ]
-
-    client.batch_write_item(RequestItems={config.games_table: items})
-    logger.info("Created game for %s", game_date)
+        {
+            "Update": {
+                "TableName": config.games_table,
+                "Key": {"gameDate": {"S": week_start}, "sk": {"S": "weekStatus"}},
+                "UpdateExpression": (
+                    "SET gameCount = if_not_exists(gameCount, :zero) + :one, "
+                    "adminResponded = :true"
+                ),
+                "ExpressionAttributeValues": {
+                    ":zero": {"N": "0"},
+                    ":one": {"N": "1"},
+                    ":true": {"BOOL": True},
+                },
+            }
+        },
+    ])
+    logger.info("Created game for %s (week: %s)", game_date, week_start)
 
 
 def get_game_status(game_date: str) -> dict[str, Any] | None:
@@ -667,6 +685,50 @@ def remove_guest_from_status(game_date: str, status: str, guest_pk: str) -> dict
     )
     logger.info(f"Removed guest pk={guest_pk} from playerStatus#{status} for {game_date}")
     return target
+
+
+def get_week_status(week_start_date: str) -> dict[str, Any] | None:
+    """Get the weekStatus item for a given Monday date (YYYY-MM-DD)."""
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    response = table.get_item(Key={"gameDate": week_start_date, "sk": "weekStatus"})
+    return response.get("Item")
+
+
+def set_week_no_game(week_start_date: str, reason: str) -> None:
+    """Mark a week as no-game (reason: 'no_response' or 'admin_declined')."""
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    table.update_item(
+        Key={"gameDate": week_start_date, "sk": "weekStatus"},
+        UpdateExpression="SET adminResponded = :true, #reason = :reason",
+        ExpressionAttributeNames={"#reason": "reason"},
+        ExpressionAttributeValues={":true": True, ":reason": reason},
+    )
+    logger.info(f"Week {week_start_date} marked no-game: {reason}")
+
+
+def get_open_games() -> list[dict[str, Any]]:
+    """Scan the Games table for all currently OPEN gameStatus items."""
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+
+    response = table.scan(
+        FilterExpression="sk = :sk AND #status = :open",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":sk": "gameStatus", ":open": "OPEN"},
+    )
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression="sk = :sk AND #status = :open",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":sk": "gameStatus", ":open": "OPEN"},
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+    logger.info(f"Found {len(items)} open game(s)")
+    return items
 
 
 def pre_cancel_game(game_date: str) -> None:
