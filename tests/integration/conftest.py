@@ -9,6 +9,7 @@ import os
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 
 LOCALSTACK_ENDPOINT = "http://localhost:4566"
 
@@ -75,6 +76,7 @@ def env_vars():
     os.environ["GAMES_TABLE"] = GAMES_TABLE
     os.environ["EMAIL_BUCKET"] = EMAIL_BUCKET
     os.environ["SENDER_EMAIL"] = SENDER_EMAIL
+    os.environ["ADMIN_EMAIL"] = "admin@example.com"
     os.environ["GAME_LOCATION"] = "Main Court"
     os.environ["BEDROCK_MODEL_ID"] = "anthropic.claude-3-haiku-20240307-v1:0"
     # boto3 >= 1.34 honours this env var natively, routing every service call
@@ -84,9 +86,21 @@ def env_vars():
 
 @pytest.fixture(scope="session")
 def dynamodb_tables(aws_credentials, env_vars, localstack_endpoint):
-    """Create both DynamoDB tables on LocalStack once per session."""
+    """Create both DynamoDB tables on LocalStack once per session.
+
+    LocalStack persists state in a named volume, so a crashed prior run can
+    leave stale tables behind (possibly with an out-of-date key schema). Drop
+    any leftovers first so each session starts from the current schema.
+    """
     dynamodb = boto3.resource("dynamodb", endpoint_url=localstack_endpoint,
                               region_name="eu-west-1")
+
+    client = dynamodb.meta.client
+    existing = client.list_tables()["TableNames"]
+    for name in (PLAYERS_TABLE, GAMES_TABLE):
+        if name in existing:
+            dynamodb.Table(name).delete()
+            client.get_waiter("table_not_exists").wait(TableName=name)
 
     # Players table  (PK=email, SK=active)
     dynamodb.create_table(
@@ -125,13 +139,26 @@ def dynamodb_tables(aws_credentials, env_vars, localstack_endpoint):
 
 @pytest.fixture(scope="session")
 def s3_bucket(aws_credentials, env_vars, localstack_endpoint):
-    """Create the email S3 bucket on LocalStack once per session."""
+    """Create the email S3 bucket on LocalStack once per session.
+
+    Tolerant of a bucket left behind by an earlier run: LocalStack persists
+    state in a named volume and create_bucket is not idempotent, so a
+    previously-created bucket would otherwise fail setup with
+    BucketAlreadyOwnedByYou.
+    """
     s3 = boto3.client("s3", endpoint_url=localstack_endpoint,
                       region_name="eu-west-1")
-    s3.create_bucket(
-        Bucket=EMAIL_BUCKET,
-        CreateBucketConfiguration={"LocationConstraint": "eu-west-1"},
-    )
+    try:
+        s3.create_bucket(
+            Bucket=EMAIL_BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": "eu-west-1"},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] not in (
+            "BucketAlreadyOwnedByYou",
+            "BucketAlreadyExists",
+        ):
+            raise
     yield s3
 
 
