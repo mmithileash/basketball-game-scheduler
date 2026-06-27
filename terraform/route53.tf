@@ -11,5 +11,5 @@ resource "aws_route53_record" "mx" {
   name    = var.domain_name
   type    = "MX"
   ttl     = 600
-  records = ["10 inbound-smtp.us-east-1.amazonaws.com"]
+  records = ["10 inbound-smtp.${var.aws_region}.amazonaws.com"]
 }

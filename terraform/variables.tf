@@ -1,3 +1,9 @@
+variable "aws_region" {
+  description = "AWS region to deploy into. Must be a region where SES inbound email and the configured Bedrock model are available."
+  type        = string
+  default     = "us-east-1"
+}
+
 variable "domain_name" {
   description = "Domain name for SES email and Route 53 hosted zone (e.g. hoops.example.com)"
   type        = string
@@ -15,9 +21,9 @@ variable "game_location" {
 }
 
 variable "bedrock_model_id" {
-  description = "AWS Bedrock model ID for NLU intent parsing"
+  description = "AWS Bedrock inference profile ID for NLU intent parsing. Claude Haiku 4.5 is not available with on-demand throughput and must be invoked via a cross-region inference profile (e.g. 'us.' prefix for US regions, 'eu.' for EU regions)."
   type        = string
-  default     = "anthropic.claude-3-haiku-20240307-v1:0"
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 
 variable "min_players" {

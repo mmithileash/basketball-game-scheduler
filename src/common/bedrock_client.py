@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -9,6 +10,17 @@ from common.config import load_config
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown code fences the model may wrap JSON in.
+
+    Newer Claude models (e.g. Haiku 4.5) often return ```json ... ``` despite
+    being asked for raw JSON; the leading backticks break json.loads().
+    """
+    return _JSON_FENCE_RE.sub("", text.strip()).strip()
 
 _config = None
 _bedrock_client = None
@@ -124,7 +136,7 @@ def parse_player_email(
         )
 
         response_body = json.loads(response["body"].read())
-        assistant_text = response_body["content"][0]["text"].strip()
+        assistant_text = _extract_json(response_body["content"][0]["text"])
 
         # Parse the JSON response
         result = json.loads(assistant_text)
@@ -253,7 +265,7 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         )
 
         response_body = json.loads(response["body"].read())
-        assistant_text = response_body["content"][0]["text"].strip()
+        assistant_text = _extract_json(response_body["content"][0]["text"])
         result = json.loads(assistant_text)
 
         logger.info(f"Admin command parsed for {sender_email}: {result}")

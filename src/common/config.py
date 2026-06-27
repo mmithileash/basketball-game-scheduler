@@ -29,7 +29,7 @@ def load_config() -> Config:
         admin_email=os.environ["ADMIN_EMAIL"],
         game_location=os.environ.get("GAME_LOCATION", "TBD"),
         bedrock_model_id=os.environ.get(
-            "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
+            "BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
         ),
         min_players=int(os.environ.get("MIN_PLAYERS", "6")),
         long_game_threshold=int(os.environ.get("LONG_GAME_THRESHOLD", "10")),
