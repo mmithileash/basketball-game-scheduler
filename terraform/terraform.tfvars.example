@@ -1,0 +1,4 @@
+domain_name   = "example.com"
+sender_email  = "aiagent@example.com"
+game_location = "Your Court / Venue"
+admin_email   = "admin@example.com"

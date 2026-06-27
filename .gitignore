@@ -4,6 +4,10 @@
 terraform.tfstate
 terraform.tfstate.backup
 *.tfplan
+# Real config values (domain, emails, location) live here — keep out of git.
+# Copy terraform.tfvars.example to terraform.tfvars and fill in locally.
+terraform.tfvars
+*.auto.tfvars
 .build/
 .claude/*
 .venv/*
