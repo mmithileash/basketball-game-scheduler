@@ -220,10 +220,13 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         '  "email": "player email or null",\n'
         '  "name": "player name or null",\n'
         '  "is_admin": true/false/null,\n'
-        '  "games": [{{"date": "YYYY-MM-DD", "time": "HH:MM UTC"}}]\n'
+        '  "games": [{{"date": "YYYY-MM-DD", "startTime": "display time e.g. 9:00 AM, or null", "durationHours": "integer or null"}}]\n'
         '}}\n\n'
-        "For SCHEDULE_GAMES: populate 'games' with each game's date and time. "
-        "If no time is mentioned, default to '11:00 UTC'. Games can be on any day of the week.\n"
+        "For SCHEDULE_GAMES: populate 'games' with each game's date. Report ONLY what the "
+        "admin actually said about timing: set 'startTime' to a display-ready time string "
+        "(e.g. '9:00 AM') if they gave one, otherwise null; set 'durationHours' to the integer "
+        "number of hours if they gave one, otherwise null. Do NOT invent or default a time or "
+        "duration that wasn't mentioned. Games can be on any day of the week.\n"
         "For NO_GAMES_THIS_WEEK: set games to [].\n"
         "For CANCEL_GAME: set game_date to the date being cancelled (YYYY-MM-DD). "
         "If you truly cannot determine the date, set game_date to null.\n"
@@ -255,13 +258,22 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
 
         logger.info(f"Admin command parsed for {sender_email}: {result}")
 
+        games = [
+            {
+                "date": g.get("date"),
+                "startTime": g.get("startTime"),
+                "durationHours": g.get("durationHours"),
+            }
+            for g in result.get("games", [])
+        ]
+
         return {
             "intent": result.get("intent", "UNKNOWN"),
             "game_date": result.get("game_date"),
             "email": result.get("email"),
             "name": result.get("name"),
             "is_admin": result.get("is_admin"),
-            "games": result.get("games", []),
+            "games": games,
         }
 
     except json.JSONDecodeError as e:

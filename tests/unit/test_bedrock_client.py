@@ -272,17 +272,34 @@ def test_parse_admin_email_schedule_games(mocker):
         "name": None,
         "is_admin": None,
         "games": [
-            {"date": "2026-07-07", "time": "11:00 UTC"},
-            {"date": "2026-07-10", "time": "11:00 UTC"},
+            {"date": "2026-07-07", "startTime": None, "durationHours": None},
+            {"date": "2026-07-10", "startTime": "9:00 AM", "durationHours": 2},
         ],
     })
 
-    result = parse_admin_email("Schedule Tuesday and Friday this week", "admin@example.com")
+    result = parse_admin_email("Schedule Tuesday, and Friday 2 hours from 9am", "admin@example.com")
 
     assert result["intent"] == "SCHEDULE_GAMES"
     assert len(result["games"]) == 2
     assert result["games"][0]["date"] == "2026-07-07"
-    assert result["games"][1]["date"] == "2026-07-10"
+    # Unmentioned timing is reported as null, not defaulted
+    assert result["games"][0]["startTime"] is None
+    assert result["games"][0]["durationHours"] is None
+    assert result["games"][1]["startTime"] == "9:00 AM"
+    assert result["games"][1]["durationHours"] == 2
+
+
+@pytest.mark.unit
+def test_parse_admin_email_schedule_games_reports_unmentioned_timing_as_null(mocker):
+    """A bare date with no timing keys comes back with startTime/durationHours None."""
+    _make_admin_bedrock_response(mocker, {
+        "intent": "SCHEDULE_GAMES",
+        "games": [{"date": "2026-07-07"}],
+    })
+
+    result = parse_admin_email("Schedule Tuesday", "admin@example.com")
+
+    assert result["games"][0] == {"date": "2026-07-07", "startTime": None, "durationHours": None}
 
 
 @pytest.mark.unit

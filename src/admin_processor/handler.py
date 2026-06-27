@@ -7,7 +7,9 @@ from typing import Any
 import boto3
 
 from common.bedrock_client import parse_admin_email
+from common.config import load_config
 from common.date_utils import sfn_timestamps_for_game, week_start_for_date
+from common.policy import default_policy, fixed_policy
 from common.dynamo import (
     add_player,
     create_game,
@@ -81,15 +83,55 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
             return {"statusCode": 200, "body": "No games parsed"}
 
-        sfn_arn = os.environ.get("GAME_LIFECYCLE_SFN_ARN")
-        sfn = _get_sfn_client() if sfn_arn else None
-        scheduled: list[str] = []
+        config = load_config()
 
+        # Classify each game by how many of (start time, duration) the admin gave.
+        partials: list[str] = []
+        plans: list[tuple[str, dict[str, Any]]] = []
         for game_info in games_to_schedule:
             game_date = game_info.get("date")
             if not game_date:
                 continue
-            create_game(game_date)
+            start_time = game_info.get("startTime")
+            duration_hours = game_info.get("durationHours")
+            has_time = start_time is not None
+            has_duration = duration_hours is not None
+
+            if has_time and has_duration:
+                plans.append((game_date, fixed_policy(
+                    start_time,
+                    int(duration_hours),
+                    threshold=config.long_game_threshold,
+                    min_players=config.min_players,
+                )))
+            elif not has_time and not has_duration:
+                plans.append((game_date, default_policy(config)))
+            else:
+                missing = "duration" if has_time else "start time"
+                given = f"start time {start_time}" if has_time else f"duration {duration_hours}h"
+                partials.append(
+                    f"  - {game_date}: you gave a {given} but no {missing}."
+                )
+
+        # Any partial spec holds the whole batch: create nothing, ask for a clean resend.
+        if partials:
+            send_email(
+                sender_email,
+                f"Re: {subject}",
+                "I couldn't schedule your games because some were incomplete. "
+                "A game needs either no time at all (and I'll use the default tiers) "
+                "or both a start time and a duration.\n\n"
+                + "\n".join(partials)
+                + "\n\nNothing was scheduled. Please resend the complete command.",
+            )
+            return {"statusCode": 200, "body": "Partial spec, batch held"}
+
+        sfn_arn = os.environ.get("GAME_LIFECYCLE_SFN_ARN")
+        sfn = _get_sfn_client() if sfn_arn else None
+        scheduled: list[str] = []
+
+        for game_date, policy in plans:
+            create_game(game_date, policy)
             if sfn and sfn_arn:
                 execution_input = sfn_timestamps_for_game(game_date)
                 try:

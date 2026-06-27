@@ -12,6 +12,7 @@ from common.dynamo import (
     create_guest_entry,
     deactivate_player,
     delete_guest_entries,
+    freeze_game_schedule,
     get_active_players,
     get_game_status,
     get_open_games,
@@ -125,6 +126,59 @@ def test_create_game(sample_game_date):
         item = next(i for i in items if i["sk"] == sk)
         assert item["players"] == {}
         assert item["guests"] == []
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stores_explicit_policy(sample_game_date):
+    """A policy passed to create_game is stored on the gameStatus item."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    policy = {
+        "minPlayers": 5,
+        "threshold": 8,
+        "longGame": {"startTime": "9:00 AM", "durationHours": 2},
+        "shortGame": {"startTime": "9:00 AM", "durationHours": 2},
+    }
+    create_game(sample_game_date, policy)
+
+    item = get_game_status(sample_game_date)
+    assert item["policy"]["minPlayers"] == 5
+    assert item["policy"]["threshold"] == 8
+    assert item["policy"]["longGame"] == {"startTime": "9:00 AM", "durationHours": 2}
+    assert item["policy"]["shortGame"] == {"startTime": "9:00 AM", "durationHours": 2}
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_seeds_default_policy_when_omitted(sample_game_date):
+    """Omitting policy seeds a default two-tier policy so the block is always present."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date)
+
+    item = get_game_status(sample_game_date)
+    assert item["policy"]["minPlayers"] == 6
+    assert item["policy"]["threshold"] == 10
+    assert item["policy"]["longGame"]["durationHours"] == 2
+    assert item["policy"]["shortGame"]["durationHours"] == 1
+
+
+@pytest.mark.unit
+@mock_aws
+def test_freeze_game_schedule_persists_resolved_time_and_duration(sample_game_date):
+    """freeze_game_schedule writes the resolved start time and duration onto the game."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date)
+    freeze_game_schedule(sample_game_date, "10:00 AM", 2)
+
+    item = get_game_status(sample_game_date)
+    assert item["confirmedStartTime"] == "10:00 AM"
+    assert item["confirmedDurationHours"] == 2
 
 
 @pytest.mark.unit

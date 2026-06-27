@@ -52,41 +52,14 @@ def send_email(to: str, subject: str, body: str) -> None:
     logger.info("Sent email to %s: %s", to, subject)
 
 
-def send_announcement(
-    player_email: str,
-    player_name: str | None,
-    game_date: str,
-) -> None:
-    """Send game announcement email."""
-    config = _get_config()
-    greeting = f"Hi {player_name}" if player_name else "Hi"
-
-    subject = f"Basketball Game - {game_date} [Game: {game_date}]"
-    body = (
-        f"{greeting},\n\n"
-        f"A basketball game has been scheduled!\n\n"
-        f"Date: {game_date}\n"
-        f"Time: {config.game_time}\n"
-        f"Location: {config.game_location}\n\n"
-        f"Please reply to this email to let us know if you can make it.\n"
-        f"You can say things like:\n"
-        f"  - \"I'm in\" or \"Yes\" to join\n"
-        f"  - \"Can't make it\" or \"No\" to decline\n"
-        f"  - \"Maybe\" if you're unsure\n"
-        f"  - \"I'm bringing 2 guests: John, Jane\" to bring guests\n\n"
-        f"We need at least {config.min_players} players to play. Looking forward to it!\n"
-    )
-
-    send_email(player_email, subject, body + _unsubscribe_footer())
-
-
 def send_reminder(
     player_email: str,
     player_name: str | None,
     confirmed_count: int,
     game_date: str,
+    min_players: int,
 ) -> None:
-    """Send reminder email with current confirmed count."""
+    """Send reminder email with current confirmed count and the game's minimum."""
     greeting = f"Hi {player_name}" if player_name else "Hi"
 
     subject = f"Reminder: Basketball Game - {game_date} [Game: {game_date}]"
@@ -94,7 +67,7 @@ def send_reminder(
         f"{greeting},\n\n"
         f"This is a reminder about the basketball game on {game_date}.\n\n"
         f"We currently have {confirmed_count} confirmed player(s) "
-        f"(need at least 6).\n\n"
+        f"(need at least {min_players}).\n\n"
         f"If you haven't responded yet, please reply to let us know "
         f"if you can make it.\n"
     )
@@ -102,47 +75,15 @@ def send_reminder(
     send_email(player_email, subject, body + _unsubscribe_footer())
 
 
-def send_cancellation(player_email: str, game_date: str) -> None:
-    """Send game cancellation notice."""
+def send_cancellation(player_email: str, game_date: str, min_players: int) -> None:
+    """Send game cancellation notice citing the game's minimum-players figure."""
     subject = f"Cancelled: Basketball Game - {game_date} [Game: {game_date}]"
     body = (
         f"Hi,\n\n"
         f"Unfortunately, the basketball game scheduled for {game_date} "
         f"has been cancelled due to insufficient players "
-        f"(fewer than 6 confirmed).\n\n"
+        f"(fewer than {min_players} confirmed).\n\n"
         f"See you next week!\n"
-    )
-
-    send_email(player_email, subject, body + _unsubscribe_footer())
-
-
-def send_confirmation(
-    player_email: str,
-    game_date: str,
-    roster: dict[str, Any],
-) -> None:
-    """Send final confirmation with roster to confirmed players."""
-    config = _get_config()
-
-    subject = f"Confirmed: Basketball Game - {game_date} [Game: {game_date}]"
-
-    yes_data = roster.get("YES", {})
-    lines: list[str] = []
-    for email, data in yes_data.get("players", {}).items():
-        name = data.get("name") or email
-        lines.append(f"  - {name} ({email})")
-    for guest in yes_data.get("guests", []):
-        lines.append(f"    + Guest: {guest['name']} (via {guest['sponsorName']})")
-
-    roster_text = "\n".join(lines) if lines else "  (none)"
-
-    body = (
-        f"Hi,\n\n"
-        f"The basketball game is ON for {game_date}!\n\n"
-        f"Time: {config.game_time}\n"
-        f"Location: {config.game_location}\n\n"
-        f"Confirmed players:\n{roster_text}\n\n"
-        f"See you there!\n"
     )
 
     send_email(player_email, subject, body + _unsubscribe_footer())
@@ -246,30 +187,56 @@ def send_no_game_this_week(
     send_email(player_email, subject, body + _unsubscribe_footer())
 
 
+def _duration_label(hours: int) -> str:
+    return f"{hours} hour{'s' if hours > 1 else ''}"
+
+
 def send_tentative_announcement(
     player_email: str,
     player_name: str | None,
     game_date: str,
-    long_game_threshold: int,
+    policy: dict[str, Any],
 ) -> None:
-    """Send game announcement with tentative duration info."""
+    """Send game announcement driven by the game's policy.
+
+    When the two tiers differ the email shows both turnout-dependent branches
+    with concrete times; when they are equal it shows a single time line.
+    """
+    from common.policy import is_fixed
+
     config = _get_config()
     greeting = f"Hi {player_name}" if player_name else "Hi"
     subject = f"Basketball Game - {game_date} [Game: {game_date}]"
+
+    long_game = policy["longGame"]
+    short_game = policy["shortGame"]
+
+    if is_fixed(policy):
+        timing = (
+            f"Time: {long_game['startTime']}\n"
+            f"Duration: {_duration_label(int(long_game['durationHours']))}\n"
+        )
+    else:
+        timing = (
+            f"The start time and duration depend on how many of us sign up:\n"
+            f"  - If {policy['threshold']}+ players confirm: "
+            f"{long_game['startTime']} for {_duration_label(int(long_game['durationHours']))}\n"
+            f"  - Otherwise: "
+            f"{short_game['startTime']} for {_duration_label(int(short_game['durationHours']))}\n"
+        )
+
     body = (
         f"{greeting},\n\n"
         f"A basketball game has been scheduled!\n\n"
         f"Date: {game_date}\n"
-        f"Time: {config.game_time}\n"
+        f"{timing}"
         f"Location: {config.game_location}\n\n"
-        f"Tentative duration: 1 hour "
-        f"(2 hours if {long_game_threshold}+ players confirm).\n\n"
         f"Please reply to let us know if you can make it:\n"
         f"  - \"I'm in\" or \"Yes\" to join\n"
         f"  - \"Can't make it\" or \"No\" to decline\n"
         f"  - \"Maybe\" if you're unsure\n"
         f"  - \"I'm bringing 2 guests: John, Jane\" to bring guests\n\n"
-        f"We need at least {config.min_players} players to play.\n"
+        f"We need at least {policy['minPlayers']} players to play.\n"
     )
     send_email(player_email, subject, body + _unsubscribe_footer())
 
@@ -278,9 +245,10 @@ def send_final_confirmation_with_duration(
     player_email: str,
     game_date: str,
     roster: dict[str, Any],
+    start_time: str,
     duration_hours: int,
 ) -> None:
-    """Send final game confirmation with locked-in duration."""
+    """Send final game confirmation with the locked-in start time and duration."""
     config = _get_config()
     subject = f"Confirmed: Basketball Game - {game_date} [Game: {game_date}]"
 
@@ -293,13 +261,12 @@ def send_final_confirmation_with_duration(
         lines.append(f"    + Guest: {guest['name']} (via {guest['sponsorName']})")
 
     roster_text = "\n".join(lines) if lines else "  (none)"
-    duration_label = f"{duration_hours} hour{'s' if duration_hours > 1 else ''}"
 
     body = (
         f"Hi,\n\n"
         f"The basketball game is ON for {game_date}!\n\n"
-        f"Time: {config.game_time}\n"
-        f"Duration: {duration_label}\n"
+        f"Time: {start_time}\n"
+        f"Duration: {_duration_label(duration_hours)}\n"
         f"Location: {config.game_location}\n\n"
         f"Confirmed players:\n{roster_text}\n\n"
         f"See you there!\n"

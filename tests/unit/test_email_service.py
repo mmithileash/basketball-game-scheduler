@@ -5,9 +5,7 @@ from moto import mock_aws
 from common.email_service import (
     send_admin_cancelled_broadcast,
     send_admin_weekly_prompt,
-    send_announcement,
     send_cancellation,
-    send_confirmation,
     send_email,
     send_final_confirmation_with_duration,
     send_guest_followup,
@@ -16,6 +14,20 @@ from common.email_service import (
     send_reminder,
     send_tentative_announcement,
 )
+
+_TIERED_POLICY = {
+    "minPlayers": 6,
+    "threshold": 10,
+    "longGame": {"startTime": "10:00 AM", "durationHours": 2},
+    "shortGame": {"startTime": "11:00 AM", "durationHours": 1},
+}
+
+_FIXED_POLICY = {
+    "minPlayers": 6,
+    "threshold": 10,
+    "longGame": {"startTime": "9:00 AM", "durationHours": 2},
+    "shortGame": {"startTime": "9:00 AM", "durationHours": 2},
+}
 
 
 def _setup_ses():
@@ -48,63 +60,12 @@ def test_send_email():
 
 @pytest.mark.unit
 @mock_aws
-def test_send_announcement():
-    """Verify subject and body contain game date, time, location."""
-    ses = _setup_ses()
-
-    # We'll intercept by checking no exception and verifying content via
-    # a mock wrapper approach - but with moto we just verify it doesn't error
-    # and test the content by calling the function that builds the email
-    send_announcement("player@example.com", "Alice", "2026-03-28")
-
-    quota = ses.get_send_quota()
-    assert quota["SentLast24Hours"] >= 1.0
-
-
-@pytest.mark.unit
-@mock_aws
-def test_send_announcement_with_name(mocker):
-    """Verify personalised greeting when player name is provided."""
-    _setup_ses()
-
-    mock_send = mocker.patch("common.email_service.send_email")
-    send_announcement("player@example.com", "Alice", "2026-03-28")
-
-    mock_send.assert_called_once()
-    args = mock_send.call_args
-    subject = args[0][1] if len(args[0]) > 1 else args.kwargs.get("subject", "")
-    body = args[0][2] if len(args[0]) > 2 else args.kwargs.get("body", "")
-
-    assert "2026-03-28" in subject
-    assert "Hi Alice" in body
-    assert "10:00 AM" in body
-    assert "Main Court" in body
-
-
-@pytest.mark.unit
-@mock_aws
-def test_send_announcement_without_name(mocker):
-    """Verify generic greeting when player name is None."""
-    _setup_ses()
-
-    mock_send = mocker.patch("common.email_service.send_email")
-    send_announcement("player@example.com", None, "2026-03-28")
-
-    mock_send.assert_called_once()
-    body = mock_send.call_args[0][2]
-
-    assert body.startswith("Hi,") or body.startswith("Hi\n")
-    assert "Hi None" not in body
-
-
-@pytest.mark.unit
-@mock_aws
 def test_send_reminder(mocker):
-    """Verify reminder contains confirmed count."""
+    """Verify reminder contains confirmed count and policy minimum."""
     _setup_ses()
 
     mock_send = mocker.patch("common.email_service.send_email")
-    send_reminder("player@example.com", "Bob", 4, "2026-03-28")
+    send_reminder("player@example.com", "Bob", 4, "2026-03-28", 6)
 
     mock_send.assert_called_once()
     subject = mock_send.call_args[0][1]
@@ -113,17 +74,18 @@ def test_send_reminder(mocker):
     assert "Reminder" in subject
     assert "2026-03-28" in subject
     assert "4 confirmed" in body
+    assert "at least 6" in body
     assert "Hi Bob" in body
 
 
 @pytest.mark.unit
 @mock_aws
 def test_send_cancellation(mocker):
-    """Verify cancellation message."""
+    """Verify cancellation message uses the game's minimum-players figure."""
     _setup_ses()
 
     mock_send = mocker.patch("common.email_service.send_email")
-    send_cancellation("player@example.com", "2026-03-28")
+    send_cancellation("player@example.com", "2026-03-28", 8)
 
     mock_send.assert_called_once()
     subject = mock_send.call_args[0][1]
@@ -132,41 +94,7 @@ def test_send_cancellation(mocker):
     assert "Cancelled" in subject
     assert "2026-03-28" in subject
     assert "cancelled" in body.lower()
-    assert "fewer than 6" in body
-
-
-@pytest.mark.unit
-@mock_aws
-def test_send_confirmation(mocker):
-    """Verify roster included in body."""
-    _setup_ses()
-
-    roster = {
-        "YES": {
-            "players": {
-                "alice@example.com": {"name": "Alice"},
-                "bob@example.com": {"name": "Bob"},
-            },
-            "guests": [{"name": "Mike", "sponsorName": "Alice"}],
-        },
-        "NO": {"players": {"charlie@example.com": {"name": "Charlie"}}, "guests": []},
-        "MAYBE": {"players": {}, "guests": []},
-    }
-
-    mock_send = mocker.patch("common.email_service.send_email")
-    send_confirmation("alice@example.com", "2026-03-28", roster)
-
-    mock_send.assert_called_once()
-    subject = mock_send.call_args[0][1]
-    body = mock_send.call_args[0][2]
-
-    assert "Confirmed" in subject
-    assert "2026-03-28" in subject
-    assert "alice@example.com" in body
-    assert "bob@example.com" in body
-    assert "Mike" in body
-    assert "10:00 AM" in body
-    assert "Main Court" in body
+    assert "fewer than 8" in body
 
 
 @pytest.mark.unit
@@ -308,11 +236,11 @@ def test_send_guest_cancelled_sponsor_notification_no_name(mocker):
 
 @pytest.mark.unit
 @mock_aws
-def test_unsubscribe_footer_in_announcement(mocker):
-    """send_announcement body contains the mailto unsubscribe link."""
+def test_unsubscribe_footer_in_tentative_announcement(mocker):
+    """send_tentative_announcement body contains the mailto unsubscribe link."""
     _setup_ses()
     mock_send = mocker.patch("common.email_service.send_email")
-    send_announcement("player@example.com", "Alice", "2026-04-12")
+    send_tentative_announcement("player@example.com", "Alice", "2026-04-12", _TIERED_POLICY)
     body = mock_send.call_args[0][2]
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
 
@@ -322,7 +250,7 @@ def test_unsubscribe_footer_in_announcement(mocker):
 def test_unsubscribe_footer_in_reminder(mocker):
     _setup_ses()
     mock_send = mocker.patch("common.email_service.send_email")
-    send_reminder("player@example.com", "Alice", 4, "2026-04-12")
+    send_reminder("player@example.com", "Alice", 4, "2026-04-12", 6)
     body = mock_send.call_args[0][2]
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
 
@@ -332,14 +260,14 @@ def test_unsubscribe_footer_in_reminder(mocker):
 def test_unsubscribe_footer_in_cancellation(mocker):
     _setup_ses()
     mock_send = mocker.patch("common.email_service.send_email")
-    send_cancellation("player@example.com", "2026-04-12")
+    send_cancellation("player@example.com", "2026-04-12", 6)
     body = mock_send.call_args[0][2]
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
 
 
 @pytest.mark.unit
 @mock_aws
-def test_unsubscribe_footer_in_confirmation(mocker):
+def test_unsubscribe_footer_in_final_confirmation(mocker):
     _setup_ses()
     roster = {
         "YES": {"players": {"player@example.com": {"name": "Alice"}}, "guests": []},
@@ -347,7 +275,7 @@ def test_unsubscribe_footer_in_confirmation(mocker):
         "MAYBE": {"players": {}, "guests": []},
     }
     mock_send = mocker.patch("common.email_service.send_email")
-    send_confirmation("player@example.com", "2026-04-12", roster)
+    send_final_confirmation_with_duration("player@example.com", "2026-04-12", roster, "10:00 AM", 2)
     body = mock_send.call_args[0][2]
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
 
@@ -441,14 +369,26 @@ def test_send_no_game_this_week_admin_declined(mocker):
 
 
 @pytest.mark.unit
-def test_send_tentative_announcement_contains_threshold(mocker):
+def test_send_tentative_announcement_tiered_shows_both_branches(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
-    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", long_game_threshold=10)
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _TIERED_POLICY)
     to, subject, body = mock_send.call_args[0]
     assert "[Game: 2026-07-07]" in subject
     assert "10+" in body
-    assert "Tentative duration" in body
+    assert "10:00 AM" in body
+    assert "11:00 AM" in body
+    assert "at least 6" in body
     assert "Hi Alice" in body
+
+
+@pytest.mark.unit
+def test_send_tentative_announcement_fixed_shows_single_line(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _FIXED_POLICY)
+    _, _, body = mock_send.call_args[0]
+    assert "9:00 AM" in body
+    assert "10+" not in body
+    assert "depend" not in body.lower()
 
 
 @pytest.mark.unit
@@ -459,10 +399,11 @@ def test_send_final_confirmation_with_duration_1hr(mocker):
         "NO": {"players": {}, "guests": []},
         "MAYBE": {"players": {}, "guests": []},
     }
-    send_final_confirmation_with_duration("alice@example.com", "2026-07-07", roster, duration_hours=1)
+    send_final_confirmation_with_duration("alice@example.com", "2026-07-07", roster, "11:00 AM", 1)
     _, subject, body = mock_send.call_args[0]
     assert "[Game: 2026-07-07]" in subject
     assert "1 hour" in body
+    assert "11:00 AM" in body
     assert "Alice" in body
 
 
@@ -470,15 +411,16 @@ def test_send_final_confirmation_with_duration_1hr(mocker):
 def test_send_final_confirmation_with_duration_2hr(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
     roster = {"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}}
-    send_final_confirmation_with_duration("player@example.com", "2026-07-07", roster, duration_hours=2)
+    send_final_confirmation_with_duration("player@example.com", "2026-07-07", roster, "10:00 AM", 2)
     _, _, body = mock_send.call_args[0]
     assert "2 hours" in body
+    assert "10:00 AM" in body
 
 
 @pytest.mark.unit
-def test_game_marker_in_announcement_subject(mocker):
+def test_game_marker_in_tentative_announcement_subject(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
-    send_announcement("player@example.com", "Alice", "2026-07-07")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _TIERED_POLICY)
     _, subject, _ = mock_send.call_args[0]
     assert "[Game: 2026-07-07]" in subject
 
@@ -486,7 +428,7 @@ def test_game_marker_in_announcement_subject(mocker):
 @pytest.mark.unit
 def test_game_marker_in_reminder_subject(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
-    send_reminder("player@example.com", "Alice", 3, "2026-07-07")
+    send_reminder("player@example.com", "Alice", 3, "2026-07-07", 6)
     _, subject, _ = mock_send.call_args[0]
     assert "[Game: 2026-07-07]" in subject
 
@@ -494,6 +436,6 @@ def test_game_marker_in_reminder_subject(mocker):
 @pytest.mark.unit
 def test_game_marker_in_cancellation_subject(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
-    send_cancellation("player@example.com", "2026-07-07")
+    send_cancellation("player@example.com", "2026-07-07", 6)
     _, subject, _ = mock_send.call_args[0]
     assert "[Game: 2026-07-07]" in subject

@@ -83,12 +83,21 @@ def get_active_admins() -> list[dict[str, Any]]:
     return [{"email": item["email"], "name": item.get("name")} for item in items]
 
 
-def create_game(game_date: str) -> None:
-    """Create a new game with status OPEN and atomically increment the week's gameCount."""
+def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
+    """Create a new game with status OPEN and atomically increment the week's gameCount.
+
+    The game's policy is stored as a map on the gameStatus item. When no policy
+    is supplied, a default two-tier policy is seeded from configuration so the
+    policy block is always present on the record.
+    """
     config = _get_config()
     client = _get_client()
     now = datetime.now(timezone.utc).isoformat()
     week_start = week_start_for_date(date.fromisoformat(game_date)).isoformat()
+
+    if policy is None:
+        from common.policy import default_policy
+        policy = default_policy(config)
 
     client.transact_write_items(TransactItems=[
         {
@@ -99,6 +108,7 @@ def create_game(game_date: str) -> None:
                     "sk": {"S": "gameStatus"},
                     "status": {"S": "OPEN"},
                     "createdAt": {"S": now},
+                    "policy": _to_ddb_attr(policy),
                 },
             }
         },
@@ -283,6 +293,23 @@ def update_game_status(game_date: str, status: str) -> None:
         ExpressionAttributeValues={":val": status},
     )
     logger.info("Updated game %s status to %s", game_date, status)
+
+
+def freeze_game_schedule(game_date: str, start_time: str, duration_hours: int) -> None:
+    """Persist the resolved start time and duration onto the gameStatus item.
+
+    Called at the confirmation step so the time players are told can never be
+    contradicted by later roster changes.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+
+    table.update_item(
+        Key={"gameDate": game_date, "sk": "gameStatus"},
+        UpdateExpression="SET confirmedStartTime = :st, confirmedDurationHours = :dur",
+        ExpressionAttributeValues={":st": start_time, ":dur": duration_hours},
+    )
+    logger.info("Froze schedule for %s: %s, %dh", game_date, start_time, duration_hours)
 
 
 def get_pending_players(game_date: str) -> list[dict[str, Any]]:
