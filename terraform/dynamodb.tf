@@ -18,6 +18,13 @@ resource "aws_dynamodb_table" "players" {
     enabled = true
   }
 
+  # Per-sender weekly rate-limit counters carry an expiresAt epoch so stale
+  # ratelimit#<week_start> rows self-delete once the week is long past.
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
   tags = {
     Name = "Players"
   }

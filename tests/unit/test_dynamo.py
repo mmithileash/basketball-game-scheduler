@@ -23,6 +23,7 @@ from common.dynamo import (
     get_player_name,
     get_roster,
     get_week_status,
+    increment_rate_limit_count,
     is_admin,
     move_confirmed_guests,
     pre_cancel_game,
@@ -679,6 +680,62 @@ def test_reactivate_player_not_found_raises():
 # ---------------------------------------------------------------------------
 # pre_cancel_game
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# per-sender weekly rate-limit counter
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_increment_rate_limit_count_accumulates_atomically():
+    """Successive increments return a monotonically climbing count and persist."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert increment_rate_limit_count("alice@example.com", "2026-06-29") == 1
+    assert increment_rate_limit_count("alice@example.com", "2026-06-29") == 2
+    assert increment_rate_limit_count("alice@example.com", "2026-06-29") == 3
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    item = table.get_item(Key={"email": "alice@example.com", "active": "ratelimit#2026-06-29"})["Item"]
+    assert int(item["count"]) == 3
+
+
+@pytest.mark.unit
+@mock_aws
+def test_increment_rate_limit_count_resets_per_week():
+    """A new week bucket is an independent counter — last week's count never carries over."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    for _ in range(10):
+        increment_rate_limit_count("alice@example.com", "2026-06-29")
+
+    # Next Monday is a fresh bucket, so the first email of week N+1 is count 1.
+    assert increment_rate_limit_count("alice@example.com", "2026-07-06") == 1
+
+
+@pytest.mark.unit
+@mock_aws
+def test_increment_rate_limit_count_writes_ttl_attribute():
+    """The counter item carries an epoch expiresAt set past the week's end for TTL cleanup."""
+    from datetime import datetime, timezone
+
+    _create_tables()
+    _reset_dynamo_caches()
+
+    increment_rate_limit_count("alice@example.com", "2026-06-29")
+
+    dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+    table = dynamodb.Table("test-players")
+    item = table.get_item(Key={"email": "alice@example.com", "active": "ratelimit#2026-06-29"})["Item"]
+
+    week_start_epoch = int(datetime(2026, 6, 29, tzinfo=timezone.utc).timestamp())
+    expires_at = int(item["expiresAt"])
+    # Expiry sits beyond the week itself so an active week is never reaped early.
+    assert expires_at >= week_start_epoch + 7 * 24 * 3600
+
 
 @pytest.mark.unit
 @mock_aws

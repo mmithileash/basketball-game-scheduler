@@ -287,6 +287,24 @@ def send_final_confirmation_with_duration(
     send_email(player_email, subject, body + _unsubscribe_footer())
 
 
+def send_rate_limit_notice(player_email: str) -> None:
+    """Send the one-time courtesy notice when a sender hits their weekly limit.
+
+    Sent exactly once (on the crossing email); subsequent over-limit emails get
+    no reply, so an auto-responder bouncing off this notice dies after one round.
+    """
+    config = _get_config()
+    subject = "You've reached your weekly email limit"
+    body = (
+        f"Hi,\n\n"
+        f"You've reached the limit of messages we can process from you this week, "
+        f"so we won't be able to action further emails until the limit resets next Monday.\n\n"
+        f"If you need something sorted out sooner, please contact the organiser "
+        f"directly at {config.admin_email}.\n"
+    )
+    send_email(player_email, subject, body)
+
+
 def send_admin_cancelled_broadcast(player_email: str, game_date: str, include_unsubscribe: bool = False) -> None:
     """Notify a player that an already-announced game has been cancelled by admin."""
     subject = f"Cancelled: Basketball Game - {game_date}"

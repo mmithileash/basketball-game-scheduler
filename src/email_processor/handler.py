@@ -1,8 +1,10 @@
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from common.bedrock_client import parse_player_email
+from common.date_utils import week_start_for_date
 from common.dynamo import (
     add_guests_to_game_status,
     create_guest_entry,
@@ -14,6 +16,8 @@ from common.dynamo import (
     get_player_name,
     get_roster,
     get_sender_role,
+    increment_rate_limit_count,
+    is_admin,
     move_confirmed_guests,
     remove_guest_from_status,
     remove_sponsor_guests_from_status,
@@ -24,9 +28,15 @@ from common.email_service import (
     send_email,
     send_guest_cancelled_sponsor_notification,
     send_guest_followup,
+    send_rate_limit_notice,
 )
 
 _GAME_DATE_RE = re.compile(r"\[Game:\s*(\d{4}-\d{2}-\d{2})\]")
+
+# Non-admin senders may have at most this many emails processed per week.
+# The post-increment count drives a 3-way branch: <= limit processes normally,
+# limit+1 sends one courtesy notice, >= limit+2 is dropped silently.
+WEEKLY_EMAIL_LIMIT = 10
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -304,6 +314,30 @@ def _resolve_game_date(subject: str, sender_email: str, body: str) -> str | None
     return None
 
 
+def _enforce_rate_limit(sender_email: str) -> dict[str, Any] | None:
+    """Gate a non-admin sender against their weekly processed-email cap.
+
+    Returns a terminal response dict when the email must not be processed
+    further (notice sent or silently dropped), or None to let processing
+    continue. Admins are exempt. Runs before game-date resolution so an
+    over-limit email costs zero Bedrock calls — including disambiguation.
+    """
+    if is_admin(sender_email):
+        return None
+
+    week_start = week_start_for_date(datetime.now(timezone.utc).date()).isoformat()
+    count = increment_rate_limit_count(sender_email, week_start)
+
+    if count <= WEEKLY_EMAIL_LIMIT:
+        return None
+    if count == WEEKLY_EMAIL_LIMIT + 1:
+        logger.info(f"Sender {sender_email} hit weekly limit (count={count}); sending courtesy notice")
+        send_rate_limit_notice(sender_email)
+        return {"statusCode": 200, "body": "Rate limit notice sent"}
+    logger.info(f"Sender {sender_email} over weekly limit (count={count}); dropping silently")
+    return {"statusCode": 200, "body": "Rate limited"}
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler: process inbound player email."""
     s3_record = event["Records"][0]["s3"]
@@ -327,6 +361,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "Please contact the organiser if you believe this is an error.",
         )
         return {"statusCode": 403, "body": "Not a registered player"}
+
+    rate_limit_response = _enforce_rate_limit(sender_email)
+    if rate_limit_response is not None:
+        return rate_limit_response
 
     game_date = _resolve_game_date(subject, sender_email, body)
     if game_date is None:

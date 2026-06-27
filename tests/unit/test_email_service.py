@@ -11,6 +11,7 @@ from common.email_service import (
     send_guest_followup,
     send_no_game_announcement,
     send_no_game_this_week,
+    send_rate_limit_notice,
     send_reminder,
     send_tentative_announcement,
 )
@@ -56,6 +57,25 @@ def test_send_email():
     # We can also check the quota
     quota = ses.get_send_quota()
     assert quota["SentLast24Hours"] >= 1.0
+
+
+@pytest.mark.unit
+@mock_aws
+def test_send_rate_limit_notice(mocker):
+    """The courtesy notice tells the sender they hit the weekly limit and to
+    contact the organiser directly; it carries no unsubscribe footer."""
+    _setup_ses()
+
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_rate_limit_notice("player@example.com")
+
+    mock_send.assert_called_once()
+    to_addr, subject, body = mock_send.call_args[0]
+    assert to_addr == "player@example.com"
+    assert "limit" in subject.lower()
+    assert "limit" in body.lower()
+    assert "admin@example.com" in body  # organiser contact
+    assert "unsubscribe" not in body.lower()
 
 
 @pytest.mark.unit
