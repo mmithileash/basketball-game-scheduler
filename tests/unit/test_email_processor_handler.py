@@ -43,8 +43,8 @@ def test_handler_join(mocker):
     _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
-        return_value={"gameDate": "2026-03-28", "status": "OPEN"},
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-03-28", "status": "OPEN"}],
     )
     mocker.patch(
         "email_processor.handler.get_roster",
@@ -80,8 +80,8 @@ def test_handler_decline(mocker):
     _patch_s3(mocker, "bob@example.com", "Re: Basketball Game", "Can't make it")
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
-        return_value={"gameDate": "2026-03-28", "status": "OPEN"},
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-03-28", "status": "OPEN"}],
     )
     mocker.patch(
         "email_processor.handler.get_roster",
@@ -120,8 +120,8 @@ def test_handler_query_roster(mocker):
     _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Who's playing?")
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
-        return_value={"gameDate": "2026-03-28", "status": "OPEN"},
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-03-28", "status": "OPEN"}],
     )
     mocker.patch(
         "email_processor.handler.get_roster",
@@ -149,15 +149,18 @@ def test_handler_query_roster(mocker):
 
 @pytest.mark.unit
 def test_handler_cancelled_game_response(mocker):
-    """Player replies to a CANCELLED game with a JOIN-style message: handler
-    must reply with the cancellation message, write no RSVP state, and leak
-    no roster.
+    """Player replies (via subject marker) to a now-CANCELLED game with a
+    JOIN-style message: handler must reply with the cancellation message,
+    write no RSVP state, and leak no roster.
     """
     fake_saturday = "2026-04-11"
-    _patch_s3(mocker, "charlie@example.com", "Re: Basketball Game", "I'm in!")
+    _patch_s3(
+        mocker, "charlie@example.com",
+        f"Re: Basketball Game - {fake_saturday} [Game: {fake_saturday}]", "I'm in!",
+    )
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
+        "email_processor.handler.get_game_status",
         return_value={"gameDate": fake_saturday, "status": "CANCELLED"},
     )
     mock_parse = mocker.patch("email_processor.handler.parse_player_email")
@@ -167,7 +170,7 @@ def test_handler_cancelled_game_response(mocker):
     result = handler(_make_s3_event(), None)
 
     assert result["statusCode"] == 200
-    assert result["body"] == "Game cancelled"
+    assert result["body"] == "No open game or ambiguous"
     mock_parse.assert_not_called()
     mock_update.assert_not_called()
 
@@ -183,16 +186,19 @@ def test_handler_cancelled_game_response(mocker):
 
 @pytest.mark.unit
 def test_handler_cancelled_game_query_roster(mocker):
-    """A player asks 'Who's playing?' for a CANCELLED game.
+    """A player asks 'Who's playing?' for a now-CANCELLED game (via subject marker).
 
     Same short-circuit as any other intent: handler must NOT call Bedrock,
     must NOT leak the (former) roster, and must reply with the cancellation
     message — even though the player explicitly asked for the roster.
     """
-    _patch_s3(mocker, "charlie@example.com", "Re: Basketball Game", "Who's playing this week?")
+    _patch_s3(
+        mocker, "charlie@example.com",
+        "Re: Basketball Game - 2026-04-11 [Game: 2026-04-11]", "Who's playing this week?",
+    )
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
+        "email_processor.handler.get_game_status",
         return_value={"gameDate": "2026-04-11", "status": "CANCELLED"},
     )
     mock_parse = mocker.patch("email_processor.handler.parse_player_email")
@@ -203,7 +209,7 @@ def test_handler_cancelled_game_query_roster(mocker):
     result = handler(_make_s3_event(), None)
 
     assert result["statusCode"] == 200
-    assert result["body"] == "Game cancelled"
+    assert result["body"] == "No open game or ambiguous"
     # Critical: Bedrock is never invoked (the intent is never classified),
     # and no roster lookup happens.
     mock_parse.assert_not_called()
@@ -224,14 +230,14 @@ def test_handler_no_open_game(mocker):
     """Verify early return if no open game."""
     _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
-    mocker.patch("email_processor.handler.get_upcoming_game", return_value=None)
+    mocker.patch("email_processor.handler.get_open_games", return_value=[])
     mock_update = mocker.patch("email_processor.handler.update_player_response")
     mock_send = mocker.patch("email_processor.handler.send_email")
 
     result = handler(_make_s3_event(), None)
 
     assert result["statusCode"] == 200
-    assert result["body"] == "No open game"
+    assert result["body"] == "No open game or ambiguous"
     mock_update.assert_not_called()
     # A "no game" reply is still sent
     mock_send.assert_called_once()
@@ -282,7 +288,7 @@ def test_bring_guests_creates_player_entries(mocker):
 
     _patch_s3(mocker, "alice@example.com", "Re: Game", "I'm in, bringing John and Jane")
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
-    mocker.patch("email_processor.handler.get_upcoming_game").return_value = {"gameDate": "2026-04-05", "status": "OPEN"}
+    mocker.patch("email_processor.handler.get_open_games").return_value = [{"gameDate": "2026-04-05", "status": "OPEN"}]
     mocker.patch("email_processor.handler.get_roster").return_value = {
         "YES": {"players": {}, "guests": []},
         "NO": {"players": {}, "guests": []},
@@ -332,7 +338,7 @@ def test_decline_with_guests_moves_to_no_and_sends_followup():
 
     with patch("email_processor.handler.fetch_email_from_s3", return_value=("alice@example.com", "Re: Game", "Can't make it")), \
          patch("email_processor.handler.get_sender_role", return_value="player"), \
-         patch("email_processor.handler.get_upcoming_game") as mock_game, \
+         patch("email_processor.handler.get_open_games") as mock_open_games, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
          patch("email_processor.handler.get_player_name") as mock_name, \
@@ -342,7 +348,7 @@ def test_decline_with_guests_moves_to_no_and_sends_followup():
          patch("email_processor.handler.send_email") as mock_send_email, \
          patch("email_processor.handler.send_guest_followup") as mock_followup:
 
-        mock_game.return_value = {"gameDate": "2026-04-05", "status": "OPEN"}
+        mock_open_games.return_value = [{"gameDate": "2026-04-05", "status": "OPEN"}]
         mock_roster.return_value = {
             "YES": {"players": {"alice@example.com": {"name": "Alice"}}, "guests": yes_guests},
             "NO": {"players": {}, "guests": []},
@@ -379,7 +385,7 @@ def test_decline_without_guests_no_followup():
 
     with patch("email_processor.handler.fetch_email_from_s3", return_value=("alice@example.com", "Re: Game", "Can't make it")), \
          patch("email_processor.handler.get_sender_role", return_value="player"), \
-         patch("email_processor.handler.get_upcoming_game") as mock_game, \
+         patch("email_processor.handler.get_open_games") as mock_open_games, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
          patch("email_processor.handler.get_player_name") as mock_name, \
@@ -388,7 +394,7 @@ def test_decline_without_guests_no_followup():
          patch("email_processor.handler.send_email") as mock_send, \
          patch("email_processor.handler.send_guest_followup") as mock_followup:
 
-        mock_game.return_value = {"gameDate": "2026-04-05", "status": "OPEN"}
+        mock_open_games.return_value = [{"gameDate": "2026-04-05", "status": "OPEN"}]
         mock_roster.return_value = {
             "YES": {"players": {"alice@example.com": {"name": "Alice"}}, "guests": []},
             "NO": {"players": {}, "guests": []},
@@ -417,14 +423,14 @@ def test_guest_confirm_moves_guests_to_yes():
 
     with patch("email_processor.handler.fetch_email_from_s3", return_value=("alice@example.com", "Re: Your guests", "John is still coming")), \
          patch("email_processor.handler.get_sender_role", return_value="player"), \
-         patch("email_processor.handler.get_upcoming_game") as mock_game, \
+         patch("email_processor.handler.get_open_games") as mock_open_games, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
          patch("email_processor.handler.get_player_name") as mock_name, \
          patch("email_processor.handler.move_confirmed_guests") as mock_move, \
          patch("email_processor.handler.send_email") as mock_send:
 
-        mock_game.return_value = {"gameDate": "2026-04-05", "status": "OPEN"}
+        mock_open_games.return_value = [{"gameDate": "2026-04-05", "status": "OPEN"}]
         mock_roster.return_value = {
             "YES": {"players": {}, "guests": []},
             "NO": {"players": {"alice@example.com": {"name": "Alice"}}, "guests": [
@@ -456,14 +462,14 @@ def test_guest_confirm_with_no_confirmed_names_does_not_move_guests():
 
     with patch("email_processor.handler.fetch_email_from_s3", return_value=("alice@example.com", "Re: Your guests", "unsure")), \
          patch("email_processor.handler.get_sender_role", return_value="player"), \
-         patch("email_processor.handler.get_upcoming_game") as mock_game, \
+         patch("email_processor.handler.get_open_games") as mock_open_games, \
          patch("email_processor.handler.get_roster") as mock_roster, \
          patch("email_processor.handler.parse_player_email") as mock_parse, \
          patch("email_processor.handler.get_player_name") as mock_name, \
          patch("email_processor.handler.move_confirmed_guests") as mock_move, \
          patch("email_processor.handler.send_email") as mock_send:
 
-        mock_game.return_value = {"gameDate": "2026-04-05", "status": "OPEN"}
+        mock_open_games.return_value = [{"gameDate": "2026-04-05", "status": "OPEN"}]
         mock_roster.return_value = {
             "YES": {"players": {}, "guests": []},
             "NO": {"players": {"alice@example.com": {"name": "Alice"}}, "guests": []},
@@ -616,8 +622,8 @@ def test_handler_guest_decline_cancels_and_notifies_sponsor(mocker):
     _patch_s3(mocker, "john@example.com", "Re: Basketball Game", "Can't make it")
     mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
-        return_value={"gameDate": "2026-04-19", "status": "OPEN"},
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-04-19", "status": "OPEN"}],
     )
     guest_obj = {"pk": "john@example.com", "sk": "guest#active", "name": "John",
                  "sponsorEmail": "alice@example.com", "sponsorName": "Alice"}
@@ -652,8 +658,8 @@ def test_handler_guest_query_roster_allowed(mocker):
     _patch_s3(mocker, "john@example.com", "Re: Basketball Game", "Who's playing?")
     mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
-        return_value={"gameDate": "2026-04-19", "status": "OPEN"},
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-04-19", "status": "OPEN"}],
     )
     mocker.patch("email_processor.handler.get_roster", return_value={
         "YES": {"players": {}, "guests": []},
@@ -681,8 +687,8 @@ def test_handler_guest_join_rejected(mocker):
     _patch_s3(mocker, "john@example.com", "Re: Basketball Game", "I'm in!")
     mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
     mocker.patch(
-        "email_processor.handler.get_upcoming_game",
-        return_value={"gameDate": "2026-04-19", "status": "OPEN"},
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-04-19", "status": "OPEN"}],
     )
     mocker.patch("email_processor.handler.get_roster", return_value={
         "YES": {"players": {}, "guests": []},
@@ -825,3 +831,161 @@ def test_handler_unsubscribe_notifies_all_admins(mocker):
     assert "admin2@example.com" in sent_to
     admin_call = next(c for c in mock_send.call_args_list if c[0][0] == "admin1@example.com")
     assert "alice@example.com" in admin_call[0][2]
+
+
+# ---------------------------------------------------------------------------
+# Multi-game disambiguation (Slice 6)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_subject_marker_routes_to_correct_game_among_multiple_open(mocker):
+    """When two games are open, the [Game: date] subject marker picks the right one."""
+    _patch_s3(
+        mocker, "alice@example.com",
+        "Re: Basketball Game - 2026-07-10 [Game: 2026-07-10]", "I'm in!",
+    )
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_game_status",
+        return_value={"gameDate": "2026-07-10", "status": "OPEN"},
+    )
+    mock_get_open = mocker.patch("email_processor.handler.get_open_games")
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "Got it"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_update.assert_called_once_with("2026-07-10", "alice@example.com", "YES", name="Alice", old_status=None)
+    # get_open_games should never be needed since the marker resolved it directly
+    mock_get_open.assert_not_called()
+
+
+@pytest.mark.unit
+def test_multiple_open_games_no_marker_sends_clarification(mocker):
+    """No subject marker + multiple open games + no Bedrock date hint → clarification reply."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[
+            {"gameDate": "2026-07-07", "status": "OPEN"},
+            {"gameDate": "2026-07-10", "status": "OPEN"},
+        ],
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "Got it"},
+    )
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"] == "No open game or ambiguous"
+    mock_update.assert_not_called()
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "2026-07-07" in body
+    assert "2026-07-10" in body
+
+
+@pytest.mark.unit
+def test_multiple_open_games_bedrock_query_target_resolves_date(mocker):
+    """No subject marker, multiple open games, but Bedrock extracts a valid date from the body."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in for the July 10th game")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[
+            {"gameDate": "2026-07-07", "status": "OPEN"},
+            {"gameDate": "2026-07-10", "status": "OPEN"},
+        ],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": "2026-07-10", "reply_draft": "Got it"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_update.assert_called_once_with("2026-07-10", "alice@example.com", "YES", name="Alice", old_status=None)
+
+
+@pytest.mark.unit
+def test_single_open_game_no_marker_resolves_unambiguously(mocker):
+    """No subject marker but exactly one open game exists → resolved without disambiguation."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-07-07", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "Got it"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_update.assert_called_once_with("2026-07-07", "alice@example.com", "YES", name="Alice", old_status=None)
+
+
+@pytest.mark.unit
+def test_subject_marker_for_played_game_falls_through_to_open_games(mocker):
+    """Marker references a PLAYED game; falls through to current open-games resolution."""
+    _patch_s3(
+        mocker, "alice@example.com",
+        "Re: Basketball Game - 2026-06-01 [Game: 2026-06-01]", "I'm in!",
+    )
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_game_status",
+        return_value={"gameDate": "2026-06-01", "status": "PLAYED"},
+    )
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-07-07", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "Got it"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_update.assert_called_once_with("2026-07-07", "alice@example.com", "YES", name="Alice", old_status=None)

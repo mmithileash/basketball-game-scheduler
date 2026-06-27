@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any
 
 from common.bedrock_client import parse_player_email
@@ -8,10 +9,11 @@ from common.dynamo import (
     deactivate_player,
     delete_guest_entries,
     get_active_admins,
+    get_game_status,
+    get_open_games,
     get_player_name,
     get_roster,
     get_sender_role,
-    get_upcoming_game,
     move_confirmed_guests,
     remove_guest_from_status,
     remove_sponsor_guests_from_status,
@@ -23,6 +25,8 @@ from common.email_service import (
     send_guest_cancelled_sponsor_notification,
     send_guest_followup,
 )
+
+_GAME_DATE_RE = re.compile(r"\[Game:\s*(\d{4}-\d{2}-\d{2})\]")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -232,6 +236,74 @@ def _handle_player_email(
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
 
 
+def _resolve_game_date(subject: str, sender_email: str, body: str) -> str | None:
+    """Determine which open game a player's email belongs to.
+
+    Resolution order:
+    1. [Game: YYYY-MM-DD] marker in the Subject header — if that game is OPEN,
+       use it; if CANCELLED, reply with the cancellation notice and stop; if
+       missing/PLAYED, fall through to open-games resolution.
+    2. Exactly one open game exists → use it unambiguously
+    3. Multiple open games → check Bedrock query_target for a date hint
+    4. Still ambiguous → send clarification reply and return None
+    """
+    match = _GAME_DATE_RE.search(subject)
+    if match:
+        marker_date = match.group(1)
+        game = get_game_status(marker_date)
+        status = game.get("status") if game else None
+        if status == "OPEN":
+            logger.info("Resolved game date from subject marker: %s", marker_date)
+            return marker_date
+        if status == "CANCELLED":
+            logger.info("Game %s referenced in subject is CANCELLED", marker_date)
+            send_email(
+                sender_email,
+                f"Re: {subject}",
+                f"The game on {marker_date} has been cancelled. "
+                f"A new game will be announced soon!",
+            )
+            return None
+        # PLAYED or missing — fall through to open-games resolution below
+
+    open_games = get_open_games()
+    if len(open_games) == 0:
+        logger.warning("No open games found for email from %s", sender_email)
+        send_email(
+            sender_email,
+            f"Re: {subject}",
+            "There is no game currently scheduled. A new game will be announced soon!",
+        )
+        return None
+
+    if len(open_games) == 1:
+        logger.info("Single open game %s, no disambiguation needed", open_games[0]["gameDate"])
+        return open_games[0]["gameDate"]
+
+    # Multiple open games — try Bedrock query_target for a date hint
+    open_dates = sorted(g["gameDate"] for g in open_games)
+    try:
+        parsed = parse_player_email(body, sender_email, {})
+        query_target = parsed.get("query_target") or ""
+        date_match = re.search(r"\d{4}-\d{2}-\d{2}", query_target)
+        if date_match and date_match.group(0) in open_dates:
+            logger.info("Resolved game date from Bedrock query_target: %s", date_match.group(0))
+            return date_match.group(0)
+    except Exception:
+        logger.warning("Bedrock failed during multi-game disambiguation", exc_info=True)
+
+    # Ambiguous — ask the player to clarify
+    date_list = ", ".join(open_dates)
+    send_email(
+        sender_email,
+        f"Re: {subject}",
+        f"We have multiple games scheduled ({date_list}). "
+        f"Please reply to the specific game announcement email so we know which one you mean.",
+    )
+    logger.info("Sent disambiguation request to %s (open games: %s)", sender_email, date_list)
+    return None
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler: process inbound player email."""
     s3_record = event["Records"][0]["s3"]
@@ -256,36 +328,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         return {"statusCode": 403, "body": "Not a registered player"}
 
-    upcoming_game = get_upcoming_game()
-    upcoming_status = upcoming_game.get("status") if upcoming_game else None
+    game_date = _resolve_game_date(subject, sender_email, body)
+    if game_date is None:
+        return {"statusCode": 200, "body": "No open game or ambiguous"}
 
-    if upcoming_status == "CANCELLED":
-        logger.info(
-            "Upcoming game %s is CANCELLED, replying to %s without RSVP processing",
-            upcoming_game["gameDate"], sender_email,
-        )
-        send_email(
-            sender_email,
-            "Re: " + subject,
-            f"The game on {upcoming_game['gameDate']} has been cancelled. "
-            "A new game will be announced on Monday!",
-        )
-        return {"statusCode": 200, "body": "Game cancelled"}
-
-    if upcoming_status != "OPEN":
-        logger.warning(
-            "No open game found (status=%s), ignoring email from %s",
-            upcoming_status, sender_email,
-        )
-        send_email(
-            sender_email,
-            "Re: " + subject,
-            "There is no game currently scheduled. "
-            "A new game will be announced on Monday!",
-        )
-        return {"statusCode": 200, "body": "No open game"}
-
-    game_date = upcoming_game["gameDate"]
     roster = get_roster(game_date)
 
     if role == "guest":
