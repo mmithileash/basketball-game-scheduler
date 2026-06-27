@@ -78,12 +78,18 @@ Admin-driven, multi-game-per-week scheduling, orchestrated by Step Functions per
 
 **Players table:** PK=`email`, SK=`active`
 
-**Games table** (single-table): PK=`gameDate` (YYYY-MM-DD) or `weekStartDate` (Monday, YYYY-MM-DD), SK varies:
+**Games table** (single-table): PK attribute is `pk`, an **entity-prefixed** value, SK varies:
+- game rows: `pk = GAME#<ISO date>` (e.g. `GAME#2026-06-27`)
+- week-status row: `pk = WEEK#<ISO Monday>` (e.g. `WEEK#2026-06-29`)
+
+The prefix (`GAME#`/`WEEK#`) is an **internal storage detail confined to `common/dynamo.py`** — built via the `game_pk()`/`week_pk()` helpers and stripped on read by `strip_pk()`. Every other layer (handlers, Step Functions input, the `game-{date}` execution name, email templates) deals in bare ISO dates, and read functions (`get_game_status`, `get_open_games`) still expose a bare `gameDate` field. The prefix exists because the old `gameDate` PK attribute lied: the `weekStatus` counter row is keyed by a Monday week-start, not a game date, which repeatedly misled readers into thinking the wrong date was stored. The Monday-keyed `weekStatus` row is intentional — its `Update`/`if_not_exists` upsert must accumulate `gameCount` across multiple games per week.
+
+SK values are unchanged:
 - `gameStatus` → `{status: OPEN|CANCELLED|PLAYED, createdAt, policy, confirmedStartTime?, confirmedDurationHours?}` — `policy` is `{minPlayers, threshold, longGame:{startTime,durationHours}, shortGame:{startTime,durationHours}}` (a fixed game has equal tiers); the `confirmed*` fields are frozen at the confirm step
 - `playerStatus#YES` → map of `{email: {guests: [...]}}`
 - `playerStatus#NO` → map of `{email: {}}`
 - `playerStatus#MAYBE` → map of `{email: {}}`
-- `weekStatus` (PK=Monday date) → `{gameCount, adminResponded, reason?: no_response|admin_declined}` — additive, incremented atomically by `create_game()`
+- `weekStatus` (on the `WEEK#<Monday>` partition) → `{gameCount, adminResponded, reason?: no_response|admin_declined}` — additive, incremented atomically by `create_game()`
 
 ### Infrastructure (`terraform/`)
 

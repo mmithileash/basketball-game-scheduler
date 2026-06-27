@@ -69,11 +69,11 @@ def dynamodb_tables():
         dynamodb.create_table(
             TableName="test-games",
             KeySchema=[
-                {"AttributeName": "gameDate", "KeyType": "HASH"},
+                {"AttributeName": "pk", "KeyType": "HASH"},
                 {"AttributeName": "sk", "KeyType": "RANGE"},
             ],
             AttributeDefinitions=[
-                {"AttributeName": "gameDate", "AttributeType": "S"},
+                {"AttributeName": "pk", "AttributeType": "S"},
                 {"AttributeName": "sk", "AttributeType": "S"},
             ],
             BillingMode="PAY_PER_REQUEST",

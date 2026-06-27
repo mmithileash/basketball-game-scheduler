@@ -26,11 +26,11 @@ resource "aws_dynamodb_table" "players" {
 resource "aws_dynamodb_table" "games" {
   name         = "Games"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "gameDate"
+  hash_key     = "pk"
   range_key    = "sk"
 
   attribute {
-    name = "gameDate"
+    name = "pk"
     type = "S"
   }
 

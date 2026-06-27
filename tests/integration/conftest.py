@@ -102,15 +102,15 @@ def dynamodb_tables(aws_credentials, env_vars, localstack_endpoint):
         BillingMode="PAY_PER_REQUEST",
     )
 
-    # Games table  (PK=gameDate, SK=sk)
+    # Games table  (PK=pk with GAME#/WEEK# prefix, SK=sk)
     dynamodb.create_table(
         TableName=GAMES_TABLE,
         KeySchema=[
-            {"AttributeName": "gameDate", "KeyType": "HASH"},
+            {"AttributeName": "pk", "KeyType": "HASH"},
             {"AttributeName": "sk", "KeyType": "RANGE"},
         ],
         AttributeDefinitions=[
-            {"AttributeName": "gameDate", "AttributeType": "S"},
+            {"AttributeName": "pk", "AttributeType": "S"},
             {"AttributeName": "sk", "AttributeType": "S"},
         ],
         BillingMode="PAY_PER_REQUEST",
@@ -212,14 +212,17 @@ def seed_game(dynamodb_tables):
     The game has 3 YES players (alice, bob, charlie), 1 NO (dave), and
     eve has not responded (pending).
     """
+    from common.dynamo import game_pk
+
     game_date = "2026-03-28"
     client = boto3.client("dynamodb", region_name="eu-west-1")
+    pk = game_pk(game_date)
 
     items = [
         {
             "PutRequest": {
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "gameStatus"},
                     "status": {"S": "OPEN"},
                     "createdAt": {"S": "2026-03-23T00:00:00+00:00"},
@@ -229,7 +232,7 @@ def seed_game(dynamodb_tables):
         {
             "PutRequest": {
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "playerStatus#YES"},
                     "players": {
                         "M": {
@@ -245,7 +248,7 @@ def seed_game(dynamodb_tables):
         {
             "PutRequest": {
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "playerStatus#NO"},
                     "players": {
                         "M": {
@@ -259,7 +262,7 @@ def seed_game(dynamodb_tables):
         {
             "PutRequest": {
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
                     "guests": {"L": []},
@@ -280,4 +283,4 @@ def seed_game(dynamodb_tables):
     # Cleanup all game items
     table = dynamodb_tables.Table(GAMES_TABLE)
     for sk in ("gameStatus", "playerStatus#YES", "playerStatus#NO", "playerStatus#MAYBE"):
-        table.delete_item(Key={"gameDate": game_date, "sk": sk})
+        table.delete_item(Key={"pk": pk, "sk": sk})

@@ -9,6 +9,9 @@ from common.dynamo import (
     add_guests_to_game_status,
     add_player,
     create_game,
+    game_pk,
+    week_pk,
+    strip_pk,
     create_guest_entry,
     deactivate_player,
     delete_guest_entries,
@@ -51,11 +54,11 @@ def _create_tables():
     dynamodb.create_table(
         TableName="test-games",
         KeySchema=[
-            {"AttributeName": "gameDate", "KeyType": "HASH"},
+            {"AttributeName": "pk", "KeyType": "HASH"},
             {"AttributeName": "sk", "KeyType": "RANGE"},
         ],
         AttributeDefinitions=[
-            {"AttributeName": "gameDate", "AttributeType": "S"},
+            {"AttributeName": "pk", "AttributeType": "S"},
             {"AttributeName": "sk", "AttributeType": "S"},
         ],
         BillingMode="PAY_PER_REQUEST",
@@ -68,6 +71,34 @@ def _reset_dynamo_caches():
     dynamo_mod._config = None
     dynamo_mod._dynamodb = None
     dynamo_mod._client = None
+
+
+# ---------------------------------------------------------------------------
+# key-builder helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_game_pk_prefixes_iso_date():
+    """game_pk produces a GAME#-prefixed ISO value."""
+    assert game_pk("2026-06-27") == "GAME#2026-06-27"
+
+
+@pytest.mark.unit
+def test_week_pk_prefixes_iso_monday():
+    """week_pk produces a WEEK#-prefixed ISO value."""
+    assert week_pk("2026-06-29") == "WEEK#2026-06-29"
+
+
+@pytest.mark.unit
+def test_strip_pk_round_trips_game():
+    """strip_pk returns the bare ISO date from a GAME# value."""
+    assert strip_pk(game_pk("2026-06-27")) == "2026-06-27"
+
+
+@pytest.mark.unit
+def test_strip_pk_round_trips_week():
+    """strip_pk returns the bare ISO date from a WEEK# value."""
+    assert strip_pk(week_pk("2026-06-29")) == "2026-06-29"
 
 
 @pytest.mark.unit
@@ -104,7 +135,7 @@ def test_create_game(sample_game_date):
 
     table = dynamodb.Table("test-games")
     response = table.query(
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("gameDate").eq(sample_game_date)
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("pk").eq(game_pk(sample_game_date))
     )
     items = response["Items"]
 
@@ -659,7 +690,7 @@ def test_pre_cancel_game_creates_cancelled_record():
 
     dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
     table = dynamodb.Table("test-games")
-    item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
+    item = table.get_item(Key={"pk": game_pk("2026-04-11"), "sk": "gameStatus"})["Item"]
     assert item["status"] == "CANCELLED"
     assert "createdAt" in item
 
@@ -681,7 +712,7 @@ def test_pre_cancel_game_does_not_overwrite_open_game():
 
     dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
     table = dynamodb.Table("test-games")
-    item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
+    item = table.get_item(Key={"pk": game_pk("2026-04-11"), "sk": "gameStatus"})["Item"]
     assert item["status"] == "CANCELLED"
 
 

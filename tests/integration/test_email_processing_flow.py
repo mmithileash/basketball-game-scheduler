@@ -10,6 +10,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 
+from common.dynamo import game_pk
 from tests.integration.conftest import EMAIL_BUCKET, GAMES_TABLE, resolve_lambda_handler
 
 
@@ -89,7 +90,7 @@ class TestPlayerJoins:
         # Verify DynamoDB
         table = dynamodb_tables.Table(GAMES_TABLE)
         yes_item = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#YES"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#YES"}
         )["Item"]
         assert "eve@example.com" in yes_item["players"]
 
@@ -119,7 +120,7 @@ class TestPlayerDeclines:
 
         table = dynamodb_tables.Table(GAMES_TABLE)
         no_item = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#NO"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#NO"}
         )["Item"]
         assert "eve@example.com" in no_item["players"]
 
@@ -149,7 +150,7 @@ class TestPlayerChangesResponse:
 
         table = dynamodb_tables.Table(GAMES_TABLE)
         yes_item = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#YES"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#YES"}
         )["Item"]
         assert "eve@example.com" in yes_item["players"]
 
@@ -172,12 +173,12 @@ class TestPlayerChangesResponse:
 
         # Verify transactional move: removed from YES, present in NO
         yes_item = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#YES"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#YES"}
         )["Item"]
         assert "eve@example.com" not in yes_item["players"]
 
         no_item = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#NO"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#NO"}
         )["Item"]
         assert "eve@example.com" in no_item["players"]
 
@@ -211,7 +212,7 @@ class TestPlayerBringsGuests:
 
         table = dynamodb_tables.Table(GAMES_TABLE)
         yes_item = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#YES"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#YES"}
         )["Item"]
 
         assert "eve@example.com" in yes_item["players"]
@@ -229,13 +230,13 @@ class TestQueryRosterNoDbChange:
         # Snapshot the current roster state
         table = dynamodb_tables.Table(GAMES_TABLE)
         before_yes = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#YES"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#YES"}
         )["Item"]["players"]
         before_no = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#NO"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#NO"}
         )["Item"]["players"]
         before_maybe = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#MAYBE"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#MAYBE"}
         )["Item"]["players"]
 
         message_id = "msg-query-001"
@@ -259,13 +260,13 @@ class TestQueryRosterNoDbChange:
 
         # Verify nothing changed
         after_yes = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#YES"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#YES"}
         )["Item"]["players"]
         after_no = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#NO"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#NO"}
         )["Item"]["players"]
         after_maybe = table.get_item(
-            Key={"gameDate": "2026-03-28", "sk": "playerStatus#MAYBE"}
+            Key={"pk": game_pk("2026-03-28"), "sk": "playerStatus#MAYBE"}
         )["Item"]["players"]
 
         assert before_yes == after_yes
