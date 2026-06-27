@@ -21,10 +21,10 @@ SENDER_EMAIL = "scheduler@example.com"
 # Format: "<module>.<function>" — the Lambda runtime uses this to resolve the
 # entry point.  Keyed by the source package name (src/<package>/).
 LAMBDA_HANDLER_CONFIGS = {
-    "announcement_sender": "handler.handler",
+    "weekly_scheduler": "handler.handler",
+    "weekly_cutoff_checker": "handler.handler",
     "email_processor": "handler.handler",
-    "reminder_checker": "handler.handler",
-    "game_finalizer": "handler.handler",
+    "admin_processor": "handler.handler",
 }
 
 

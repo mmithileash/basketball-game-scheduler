@@ -1,14 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
 
-def next_saturday(today: date | None = None) -> date:
-    """Return the date of the coming Saturday, or today if today is Saturday."""
-    if today is None:
-        today = date.today()
-    days_ahead = (5 - today.weekday()) % 7
-    return today + timedelta(days=days_ahead)
-
-
 def week_start_for_date(d: date) -> date:
     """Return the Monday that starts the ISO week containing d."""
     return d - timedelta(days=d.weekday())

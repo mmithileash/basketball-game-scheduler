@@ -32,6 +32,18 @@ variable "min_players" {
   default     = 6
 }
 
+variable "long_game_threshold" {
+  description = "Confirmed player count at/above which a game is extended to 2 hours (otherwise 1 hour)"
+  type        = number
+  default     = 10
+}
+
+variable "max_games_per_week" {
+  description = "Maximum games per week before the Monday admin prompt is suppressed"
+  type        = number
+  default     = 1
+}
+
 variable "environment" {
   description = "Environment tag (e.g. dev, staging, prod)"
   type        = string

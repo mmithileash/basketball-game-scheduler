@@ -8,9 +8,14 @@ output "ses_domain_identity_arn" {
   value       = aws_ses_domain_identity.main.arn
 }
 
-output "lambda_announcement_sender_name" {
-  description = "Name of the announcement-sender Lambda function"
-  value       = aws_lambda_function.announcement_sender.function_name
+output "lambda_weekly_scheduler_name" {
+  description = "Name of the weekly-scheduler Lambda function"
+  value       = aws_lambda_function.weekly_scheduler.function_name
+}
+
+output "lambda_weekly_cutoff_checker_name" {
+  description = "Name of the weekly-cutoff-checker Lambda function"
+  value       = aws_lambda_function.weekly_cutoff_checker.function_name
 }
 
 output "lambda_email_processor_name" {
@@ -18,9 +23,9 @@ output "lambda_email_processor_name" {
   value       = aws_lambda_function.email_processor.function_name
 }
 
-output "lambda_reminder_checker_name" {
-  description = "Name of the reminder-checker Lambda function"
-  value       = aws_lambda_function.reminder_checker.function_name
+output "game_lifecycle_state_machine_arn" {
+  description = "ARN of the per-game Step Functions state machine"
+  value       = aws_sfn_state_machine.game_lifecycle.arn
 }
 
 output "dynamodb_players_table_name" {

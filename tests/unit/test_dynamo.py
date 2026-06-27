@@ -13,7 +13,6 @@ from common.dynamo import (
     deactivate_player,
     delete_guest_entries,
     get_active_players,
-    get_current_open_game,
     get_game_status,
     get_open_games,
     get_pending_players,
@@ -215,68 +214,6 @@ def test_update_player_response_change(sample_game_date):
     assert "alice@example.com" not in roster["YES"]["players"]
     assert "alice@example.com" in roster["NO"]["players"]
 
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_found(mock_date, sample_game_date):
-    """Create OPEN game for upcoming Saturday, verify found."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)  # "2026-03-28" (Saturday)
-
-    result = get_current_open_game()
-    assert result is not None
-    assert result["gameDate"] == sample_game_date
-    assert result["status"] == "OPEN"
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_cancelled(mock_date, sample_game_date):
-    """CANCELLED game for upcoming Saturday should not be returned."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)
-    update_game_status(sample_game_date, "CANCELLED")
-
-    result = get_current_open_game()
-    assert result is None
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_no_game(mock_date):
-    """No game seeded, verify None returned."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    result = get_current_open_game()
-    assert result is None
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_played(mock_date, sample_game_date):
-    """PLAYED game for upcoming Saturday should not be returned."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)
-    update_game_status(sample_game_date, "PLAYED")
-
-    result = get_current_open_game()
-    assert result is None
 
 
 @pytest.mark.unit

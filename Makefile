@@ -1,6 +1,6 @@
 .PHONY: install test-unit test-integration test-all lint package clean import-players tf-init tf-plan tf-apply
 
-LAMBDA_FUNCTIONS := announcement_sender email_processor reminder_checker
+LAMBDA_FUNCTIONS := weekly_scheduler weekly_cutoff_checker email_processor admin_processor game_lifecycle
 BUILD_DIR := build
 
 # Install all development dependencies

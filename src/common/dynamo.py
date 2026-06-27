@@ -6,7 +6,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from common.config import load_config
-from common.date_utils import next_saturday, week_start_for_date
+from common.date_utils import week_start_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -283,28 +283,6 @@ def update_game_status(game_date: str, status: str) -> None:
         ExpressionAttributeValues={":val": status},
     )
     logger.info("Updated game %s status to %s", game_date, status)
-
-
-def get_upcoming_game() -> dict[str, Any] | None:
-    """Get the gameStatus item for the upcoming Saturday regardless of status.
-
-    Returns the raw game record (with the ``status`` field intact, e.g. OPEN /
-    CANCELLED / PLAYED) or None if no record exists for that date. Callers that
-    only want games still accepting RSVPs should use ``get_current_open_game``
-    instead; callers that need to react differently to a cancelled game (e.g.
-    the email processor) should use this function and branch on ``status``.
-    """
-    return get_game_status(next_saturday().isoformat())
-
-
-def get_current_open_game() -> dict[str, Any] | None:
-    """Get the open game for the upcoming Saturday, or None if it isn't OPEN."""
-    item = get_upcoming_game()
-    if item and item.get("status") == "OPEN":
-        logger.info(f"Current open game: {item['gameDate']}")
-        return item
-    logger.info("No open game found for upcoming Saturday")
-    return None
 
 
 def get_pending_players(game_date: str) -> list[dict[str, Any]]:
