@@ -1,67 +1,66 @@
 # Basketball Game Scheduler
 
-An automated, email-based basketball game scheduler built on AWS serverless infrastructure. Every Monday it emails ~100 players about the upcoming Saturday game, processes replies using natural language understanding (AWS Bedrock + Claude), and manages RSVPs, reminders, and cancellations — all through email.
+An automated, email-based basketball game scheduler built on AWS serverless infrastructure. Each week the admin decides whether to schedule one or more games; once scheduled, a Step Functions execution drives that game through announcement, reminders, confirmation, and finalisation. Player replies are processed using natural language understanding (AWS Bedrock + Claude) to manage RSVPs — all through email.
 
 ## How It Works
 
-1. **Monday 9AM** — An announcement email is sent to all active players for Saturday's game (skipped if an admin pre-cancelled it)
-2. **Players reply** in natural language — "I'm in", "Can't make it", "I'll bring 2 friends", "Who's playing?"
-3. **The system understands** the intent via Claude (Bedrock) and updates the roster accordingly
-4. **Wed & Fri 9AM** — If fewer than 6 players have confirmed, reminders are sent. If still under 6 by Friday, the game is cancelled
-5. **Friday with 6+** — Confirmation emails go out with the final roster
-6. **Saturday 1PM UTC** — The game is marked as PLAYED in DynamoDB
-7. **Admins** can email `admin@<domain>` at any time to cancel a game, add players, or deactivate/reactivate players
+1. **Monday 9AM UTC** — `weekly-scheduler` checks whether next week already has the max number of games scheduled; if not, it emails active admins asking whether to schedule game(s)
+2. **Admin replies** in natural language — "Tuesday and Saturday", "No games this week" — `admin-processor` parses the command via Bedrock and either creates the game(s) (starting a per-game Step Functions execution) or marks the week as having no games
+3. **Tuesday 9PM UTC** — `weekly-cutoff-checker` notifies all players if the admin never responded
+4. **Per-game lifecycle** (`basketball-game-lifecycle` Step Functions execution): T-7d sends a tentative announcement, T-4d sends a low-signup reminder if needed, T-2d makes the go/no-go decision (cancelling, or resolving the turnout tier and locking in the game's start time and duration), and on game day the game is marked `PLAYED`
+5. **Players reply** in natural language — "I'm in", "Can't make it", "I'll bring 2 friends", "Who's playing?" — to whichever game's email thread they're responding to (the system disambiguates when multiple games are open at once)
+6. **The system understands** the intent via Claude (Bedrock) and updates that game's roster accordingly
+7. **Admins** can email `admin@<domain>` at any time to schedule/cancel games, add players, or deactivate/reactivate players
 
 ## Architecture
-
-![Component Architecture](docs/diagrams/01_component_architecture.png)
-
-![Game Finalisation Flow](docs/diagrams/05_game_finalizer_flow.png)
 
 Fully serverless on AWS (eu-west-1):
 
 | Service | Role |
 |---|---|
-| **EventBridge** | Cron schedules (Mon, Wed, Fri, Sat) |
-| **Lambda** (×5) | announcement-sender, email-processor, reminder-checker, game-finalizer, admin-processor |
+| **EventBridge Scheduler** | Monday 9AM UTC weekly prompt + Tuesday 9PM UTC cutoff check |
+| **Step Functions** | One execution per game (`basketball-game-lifecycle`), driving announce → reminder → confirm/cancel → finalize |
+| **Lambda** (×8) | `weekly_scheduler`, `weekly_cutoff_checker`, `email_processor`, `admin_processor`, and 4 game-lifecycle task Lambdas |
 | **SES** | Send and receive emails |
-| **S3** | Store raw inbound emails (prefix-routed: `inbound/` → players, `admin/` → admin) |
-| **DynamoDB** (×2 tables) | Players + Games (including RSVPs) |
-| **Bedrock** (Claude Haiku) | Parse player intent and admin commands from free-text emails |
+| **S3** | Store raw inbound emails (prefix-routed: `admin/` → admin, catch-all → players) |
+| **DynamoDB** (×2 tables) | Players + Games (including RSVPs and weekly scheduling counters) |
+| **Bedrock** (Claude Haiku) | Parse admin scheduling commands and player intent from free-text emails |
 | **Route 53** | Domain DNS + MX records for SES inbound |
 
-Estimated monthly cost: **~$1.40–1.80**
-
-See [docs/architecture.md](docs/architecture.md) for detailed flow diagrams, data model, and access patterns.
+See [docs/architecture.md](docs/architecture.md) for detailed flow descriptions, data model, and access patterns.
 
 ## Project Structure
 
 ```
 ├── src/
-│   ├── common/                  # Shared modules
-│   │   ├── config.py            # Environment-based configuration
-│   │   ├── dynamo.py            # DynamoDB operations
-│   │   ├── email_service.py     # SES email sending
-│   │   └── bedrock_client.py    # Bedrock NLU intent parsing
-│   ├── announcement_sender/     # Monday announcement Lambda
-│   ├── email_processor/         # Inbound email processing Lambda
-│   ├── reminder_checker/        # Wed/Fri reminder & cancellation Lambda
-│   ├── game_finalizer/          # Saturday game finalisation Lambda
-│   └── admin_processor/         # Admin command email Lambda
-├── terraform/                   # Infrastructure as Code
+│   ├── common/                      # Shared modules
+│   │   ├── config.py                # Environment-based configuration
+│   │   ├── date_utils.py            # Week/SFN-timestamp helpers
+│   │   ├── dynamo.py                 # DynamoDB operations
+│   │   ├── email_service.py         # SES email sending
+│   │   └── bedrock_client.py        # Bedrock NLU intent parsing
+│   ├── weekly_scheduler/            # Monday admin-prompt Lambda
+│   ├── weekly_cutoff_checker/       # Tuesday no-response fallback Lambda
+│   ├── game_lifecycle/              # Per-game SFN task Lambdas
+│   │   ├── announce_task.py
+│   │   ├── reminder_task.py
+│   │   ├── confirm_or_cancel_task.py
+│   │   └── finalize_task.py
+│   ├── email_processor/             # Inbound player email processing Lambda
+│   └── admin_processor/             # Admin command email Lambda
+├── terraform/                       # Infrastructure as Code (incl. Step Functions state machine)
 ├── tests/
-│   ├── unit/                    # Unit tests (moto mocks)
-│   └── integration/             # Integration tests (LocalStack + Docker)
+│   ├── unit/                        # Unit tests (moto mocks)
+│   └── integration/                 # Integration tests (LocalStack + Docker)
 ├── scripts/
-│   ├── import_players.py        # CSV player import script
-│   └── sample_players.csv       # Example player list
+│   ├── import_players.py            # CSV player import script
+│   └── sample_players.csv           # Example player list
 ├── docs/
-│   ├── architecture.md          # Detailed architecture documentation
-│   └── diagrams/                # Architecture diagram PNGs
-├── docker-compose.yml           # LocalStack for integration tests
-├── Makefile                     # Build, test, and deploy commands
-├── requirements.txt             # Production dependencies
-└── requirements-dev.txt         # Development & test dependencies
+│   └── architecture.md              # Detailed architecture documentation
+├── docker-compose.yml                # LocalStack for integration tests
+├── Makefile                          # Build, test, and deploy commands
+├── requirements.txt                  # Production dependencies
+└── requirements-dev.txt              # Development & test dependencies
 ```
 
 ## Prerequisites
@@ -76,7 +75,7 @@ See [docs/architecture.md](docs/architecture.md) for detailed flow diagrams, dat
 
 1. **Register a domain** via Route 53 (or transfer an existing one)
 2. **Exit SES sandbox** — submit a support request in the AWS console to enable sending to unverified email addresses
-3. **Enable Bedrock model access** — enable Claude Haiku 3 in the Bedrock console for eu-west-1
+3. **Enable Bedrock model access** — enable the configured Claude Haiku model in the Bedrock console for eu-west-1
 
 ## Getting Started
 
@@ -115,7 +114,6 @@ Terraform will prompt for required variables, or create a `terraform.tfvars` fil
 domain_name    = "yourdomain.com"
 sender_email   = "scheduler@yourdomain.com"
 admin_email    = "admin@yourdomain.com"
-game_time      = "10:00 AM"
 game_location  = "Community Center Court"
 ```
 
@@ -150,11 +148,18 @@ After `terraform apply`, update your domain registrar's nameservers to the ones 
 | `domain_name` | Domain for SES email | *(required)* |
 | `sender_email` | From address for outgoing emails | *(required)* |
 | `admin_email` | Admin command inbox (`admin@<domain>`) | *(required)* |
-| `game_time` | Game time shown in announcements | `10:00 AM` |
 | `game_location` | Game location shown in announcements | `TBD` |
 | `bedrock_model_id` | Bedrock model for NLU | `anthropic.claude-3-haiku-20240307-v1:0` |
-| `min_players` | Minimum players for a game to proceed | `6` |
+| `min_players` | Minimum confirmed players for a game to proceed | `6` |
+| `long_game_threshold` | Confirmed count at/above which the long-game tier applies (otherwise the short-game tier) | `10` |
+| `long_game_start_time` | Start time for the long-game tier | `10:00 AM` |
+| `long_game_duration_hours` | Duration (hours) for the long-game tier | `2` |
+| `short_game_start_time` | Start time for the short-game tier | `11:00 AM` |
+| `short_game_duration_hours` | Duration (hours) for the short-game tier | `1` |
+| `max_games_per_week` | Max games per week before the Monday admin prompt is suppressed | `1` |
 | `environment` | Environment tag | `prod` |
+
+These threshold and tier start/duration values seed each game's **policy** at creation (the default two-tier policy). They are not read at runtime — a game carries its own policy on the record. An admin can override a specific game with a fixed start time and duration when scheduling (see [Admin Commands](#admin-commands)); supplying exactly one of the two is rejected and holds the whole batch.
 
 ## Supported Player Intents
 
@@ -171,7 +176,9 @@ Players reply to emails in natural language. The system understands:
 
 Only registered players and known guests (those with their own contact email) can interact with the system. Unknown senders receive a rejection email with no roster data leaked.
 
-Guests with a contact email can also reply to cancel their attendance ("Can't make it") or query the roster ("Who's playing?"). When a guest cancels, their sponsor is notified. Guests with a contact email also receive Friday confirmation and cancellation emails directly.
+When more than one game is open at once, replies are matched to the right game via a `[Game: YYYY-MM-DD]` subject marker on outbound emails, falling back to single-open-game inference, a Bedrock-derived date hint, or an explicit clarification request.
+
+Guests with a contact email can also reply to cancel their attendance ("Can't make it") or query the roster ("Who's playing?"). When a guest cancels, their sponsor is notified. Guests with a contact email also receive the final confirmation and cancellation emails directly.
 
 ## Admin Commands
 
@@ -179,8 +186,11 @@ Admins email `admin@<domain>` in natural language. Admin status is stored in Dyn
 
 | What the admin says | What happens |
 |---|---|
-| "Cancel the game on 2026-04-19" (before announcement) | Game pre-cancelled; Monday sends "no game this week" email |
-| "Cancel the game on 2026-04-19" (after announcement) | Game cancelled; YES/MAYBE players notified immediately |
+| "Tuesday and Saturday" *(in response to the weekly prompt)* | Creates both games (each with the default two-tier policy) and starts a Step Functions execution for each |
+| "Saturday, 10am for 2 hours" | Creates a **fixed** game pinned to that start time and duration (equal tiers — no turnout branching) |
+| "No games this week" | Marks the week as no-game; players are notified |
+| "Cancel the game on 2026-04-19" (before announcement) | Game pre-cancelled directly in DynamoDB |
+| "Cancel the game on 2026-04-19" (after announcement) | Game cancelled, its Step Functions execution stopped, YES/MAYBE players and guests notified immediately |
 | "Add player alice@example.com, name Alice" | Alice added as an active player |
 | "Add admin bob@example.com, name Bob" | Bob added as an active admin |
 | "Deactivate charlie@example.com" | Charlie deactivated; no longer receives game emails |
@@ -194,6 +204,8 @@ Two DynamoDB tables with no GSIs:
 
 **Players** — `PK: email, SK: active`
 
-**Games** — `PK: gameDate (YYYY-MM-DD), SK: gameStatus | playerStatus#YES | playerStatus#NO | playerStatus#MAYBE`
+**Games** — `PK: pk (entity-prefixed: GAME#<YYYY-MM-DD> for a game, WEEK#<Monday YYYY-MM-DD> for weekStatus items), SK: gameStatus | playerStatus#YES | playerStatus#NO | playerStatus#MAYBE | weekStatus`
+
+The `GAME#`/`WEEK#` prefix is an internal storage detail confined to `common/dynamo.py`; handlers and emails deal in bare ISO dates throughout.
 
 See [docs/architecture.md](docs/architecture.md) for full schema and access patterns.
