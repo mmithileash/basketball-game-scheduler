@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -665,6 +665,35 @@ def reactivate_player(email: str) -> None:
         },
     ])
     logger.info(f"Reactivated player {email}")
+
+
+def increment_rate_limit_count(email: str, week_start: str) -> int:
+    """Atomically increment and return a sender's processed-email count for a week.
+
+    The counter lives in the Players table as a per-sender, per-week item keyed
+    by ``(email, active="ratelimit#<week_start>")``. That sort value is invisible
+    to roster/admin scans and role resolution, which filter on ``"true"`` /
+    ``"guest#active"``. A single ``ADD count :one`` with ``UPDATED_NEW`` increments
+    and returns the new value in one round trip, so concurrent inbound emails can
+    never both slip past the cap. An ``expiresAt`` epoch is stamped once so
+    DynamoDB TTL self-deletes the stale weekly row.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.players_table)
+
+    week_start_dt = datetime.fromisoformat(week_start).replace(tzinfo=timezone.utc)
+    expires_at = int((week_start_dt + timedelta(days=8)).timestamp())
+
+    response = table.update_item(
+        Key={"email": email, "active": f"ratelimit#{week_start}"},
+        UpdateExpression="SET expiresAt = if_not_exists(expiresAt, :exp) ADD #count :one",
+        ExpressionAttributeNames={"#count": "count"},
+        ExpressionAttributeValues={":one": 1, ":exp": expires_at},
+        ReturnValues="UPDATED_NEW",
+    )
+    new_count = int(response["Attributes"]["count"])
+    logger.info(f"Rate-limit count for {email} (week {week_start}): {new_count}")
+    return new_count
 
 
 def get_sender_role(email: str) -> str:

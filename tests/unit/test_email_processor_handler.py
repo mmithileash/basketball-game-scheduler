@@ -37,6 +37,18 @@ def _patch_s3(mocker, sender: str, subject: str, body: str):
     )
 
 
+@pytest.fixture(autouse=True)
+def _default_rate_limit_bypass(mocker):
+    """Default every handler test to a non-admin sender well under the weekly cap.
+
+    The rate-limit gate sits in the main flow, so behavioural tests that aren't
+    about rate limiting would otherwise call the real DynamoDB-backed collaborators.
+    Tests that exercise the cap override these patches explicitly.
+    """
+    mocker.patch("email_processor.handler.is_admin", return_value=False)
+    mocker.patch("email_processor.handler.increment_rate_limit_count", return_value=1)
+
+
 @pytest.mark.unit
 def test_handler_join(mocker):
     """Mock S3 email retrieval, mock Bedrock response as JOIN, verify RSVP updated."""
@@ -955,6 +967,151 @@ def test_single_open_game_no_marker_resolves_unambiguously(mocker):
 
     assert result["statusCode"] == 200
     mock_update.assert_called_once_with("2026-07-07", "alice@example.com", "YES", name="Alice", old_status=None)
+
+
+# ---------------------------------------------------------------------------
+# Per-sender weekly rate limiting
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_rate_limit_crossing_sends_notice_and_skips_bedrock(mocker):
+    """The 11th processed email earns exactly one courtesy notice: no Bedrock
+    call, no normal reply, no roster update.
+    """
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.is_admin", return_value=False)
+    mocker.patch("email_processor.handler.increment_rate_limit_count", return_value=11)
+    mock_parse = mocker.patch("email_processor.handler.parse_player_email")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+    mock_notice = mocker.patch("email_processor.handler.send_rate_limit_notice")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_parse.assert_not_called()
+    mock_send.assert_not_called()
+    mock_notice.assert_called_once_with("alice@example.com")
+
+
+@pytest.mark.unit
+def test_rate_limit_over_limit_drops_silently(mocker):
+    """The 12th-and-beyond email is dropped: nothing sent, no Bedrock, no notice."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.is_admin", return_value=False)
+    mocker.patch("email_processor.handler.increment_rate_limit_count", return_value=12)
+    mock_parse = mocker.patch("email_processor.handler.parse_player_email")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+    mock_notice = mocker.patch("email_processor.handler.send_rate_limit_notice")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_parse.assert_not_called()
+    mock_send.assert_not_called()
+    mock_notice.assert_not_called()
+
+
+@pytest.mark.unit
+def test_rate_limit_under_limit_processes_normally(mocker):
+    """An email at or below the cap is processed normally: Bedrock called, reply sent."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "I'm in!")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.is_admin", return_value=False)
+    mocker.patch("email_processor.handler.increment_rate_limit_count", return_value=10)
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-03-28", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mock_parse = mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "You're in!"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+    mock_notice = mocker.patch("email_processor.handler.send_rate_limit_notice")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"]["intent"] == "JOIN"
+    mock_parse.assert_called_once()
+    mock_send.assert_called_once()
+    mock_notice.assert_not_called()
+
+
+@pytest.mark.unit
+def test_rate_limit_admin_exempt(mocker):
+    """An admin is never counted or limited, even past the cap: no increment, processed normally."""
+    _patch_s3(mocker, "admin@example.com", "Re: Basketball Game", "I'm in!")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.is_admin", return_value=True)
+    mock_increment = mocker.patch("email_processor.handler.increment_rate_limit_count")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-03-28", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mock_parse = mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "JOIN", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "You're in!"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Admin")
+    mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch("email_processor.handler.send_email")
+    mock_notice = mocker.patch("email_processor.handler.send_rate_limit_notice")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    assert result["body"]["intent"] == "JOIN"
+    mock_increment.assert_not_called()
+    mock_parse.assert_called_once()
+    mock_notice.assert_not_called()
+
+
+@pytest.mark.unit
+def test_rate_limit_applies_to_guests(mocker):
+    """A confirmed guest is subject to the same cap; at the crossing they get the notice."""
+    _patch_s3(mocker, "john@example.com", "Re: Basketball Game", "Who's playing?")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
+    mocker.patch("email_processor.handler.is_admin", return_value=False)
+    mocker.patch("email_processor.handler.increment_rate_limit_count", return_value=11)
+    mock_parse = mocker.patch("email_processor.handler.parse_player_email")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+    mock_notice = mocker.patch("email_processor.handler.send_rate_limit_notice")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    mock_parse.assert_not_called()
+    mock_send.assert_not_called()
+    mock_notice.assert_called_once_with("john@example.com")
+
+
+@pytest.mark.unit
+def test_rate_limit_unsubscribe_never_counted(mocker):
+    """UNSUBSCRIBE is handled before the gate and never increments the counter."""
+    _patch_s3(mocker, "alice@example.com", "UNSUBSCRIBE", "")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch("email_processor.handler.deactivate_player")
+    mocker.patch("email_processor.handler.get_active_admins", return_value=[])
+    mocker.patch("email_processor.handler.send_email")
+    mock_increment = mocker.patch("email_processor.handler.increment_rate_limit_count")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["body"] == "Unsubscribed"
+    mock_increment.assert_not_called()
 
 
 @pytest.mark.unit
