@@ -22,15 +22,19 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 
-def _make_ses_event(message_id: str) -> dict:
-    """Build a minimal SES inbound event that the handler expects."""
+def _make_s3_event(message_id: str) -> dict:
+    """Build the S3 event-notification the handler receives.
+
+    SES stores the raw email in S3 (keyed by message id) and the S3 object-created
+    notification is what actually invokes the Lambda — so the handler reads
+    ``Records[0]["s3"]["bucket"]/["object"]``, not an SES envelope.
+    """
     return {
         "Records": [
             {
-                "ses": {
-                    "mail": {
-                        "messageId": message_id,
-                    }
+                "s3": {
+                    "bucket": {"name": EMAIL_BUCKET},
+                    "object": {"key": message_id},
                 }
             }
         ]
@@ -49,11 +53,16 @@ def _put_email_in_s3(sender: str, subject: str, body_text: str, key: str):
 
 
 def _bedrock_response(intent, guest_names=None, reply="Got it!"):
-    """Return a dict shaped like bedrock_client.parse_player_email output."""
+    """Return a dict shaped like bedrock_client.parse_player_email output.
+
+    Guests are expressed as a ``guests`` list of ``{name, contact_email}`` objects
+    (the handler reads ``parsed["guests"]``); ``guest_names`` is a test-side
+    convenience that maps bare names to that shape.
+    """
     return {
         "intent": intent,
-        "guest_count": len(guest_names) if guest_names else 0,
-        "guest_names": guest_names or [],
+        "guests": [{"name": n, "contact_email": None} for n in (guest_names or [])],
+        "confirmed_guest_names": [],
         "query_target": None,
         "reply_draft": reply,
     }
@@ -82,7 +91,7 @@ class TestPlayerJoins:
             return_value=_bedrock_response("JOIN", reply="You're in!"),
         ):
             handler_fn = resolve_lambda_handler("email_processor")
-            result = handler_fn(_make_ses_event(message_id), None)
+            result = handler_fn(_make_s3_event(message_id), None)
 
         assert result["statusCode"] == 200
         assert result["body"]["intent"] == "JOIN"
@@ -113,7 +122,7 @@ class TestPlayerDeclines:
             return_value=_bedrock_response("DECLINE", reply="Sorry to hear that!"),
         ):
             handler_fn = resolve_lambda_handler("email_processor")
-            result = handler_fn(_make_ses_event(message_id), None)
+            result = handler_fn(_make_s3_event(message_id), None)
 
         assert result["statusCode"] == 200
         assert result["body"]["intent"] == "DECLINE"
@@ -146,7 +155,7 @@ class TestPlayerChangesResponse:
             return_value=_bedrock_response("JOIN"),
         ):
             handler_fn = resolve_lambda_handler("email_processor")
-            handler_fn(_make_ses_event(msg_id_1), None)
+            handler_fn(_make_s3_event(msg_id_1), None)
 
         table = dynamodb_tables.Table(GAMES_TABLE)
         yes_item = table.get_item(
@@ -167,7 +176,7 @@ class TestPlayerChangesResponse:
             "email_processor.handler.parse_player_email",
             return_value=_bedrock_response("DECLINE"),
         ):
-            result = handler_fn(_make_ses_event(msg_id_2), None)
+            result = handler_fn(_make_s3_event(msg_id_2), None)
 
         assert result["body"]["intent"] == "DECLINE"
 
@@ -187,7 +196,7 @@ class TestPlayerBringsGuests:
     def test_player_brings_guests(
         self, dynamodb_tables, s3_bucket, ses_identity, seed_players, seed_game
     ):
-        """Player joins with guests -- guests stored in the players map."""
+        """Player joins with guests -- guests stored in the YES item's guests list."""
         message_id = "msg-guests-001"
         _put_email_in_s3(
             sender="eve@example.com",
@@ -205,7 +214,7 @@ class TestPlayerBringsGuests:
             ),
         ):
             handler_fn = resolve_lambda_handler("email_processor")
-            result = handler_fn(_make_ses_event(message_id), None)
+            result = handler_fn(_make_s3_event(message_id), None)
 
         assert result["statusCode"] == 200
         assert result["body"]["intent"] == "BRING_GUESTS"
@@ -216,9 +225,9 @@ class TestPlayerBringsGuests:
         )["Item"]
 
         assert "eve@example.com" in yes_item["players"]
-        guest_data = yes_item["players"]["eve@example.com"]
-        assert "John" in guest_data["guests"]
-        assert "Jane" in guest_data["guests"]
+        guest_names = [g["name"] for g in yes_item["guests"]]
+        assert "John" in guest_names
+        assert "Jane" in guest_names
 
 
 class TestQueryRosterNoDbChange:
@@ -254,7 +263,7 @@ class TestQueryRosterNoDbChange:
             ),
         ):
             handler_fn = resolve_lambda_handler("email_processor")
-            result = handler_fn(_make_ses_event(message_id), None)
+            result = handler_fn(_make_s3_event(message_id), None)
 
         assert result["body"]["intent"] == "QUERY_ROSTER"
 
