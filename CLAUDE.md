@@ -44,40 +44,58 @@ Fully serverless email-based basketball game coordination system on AWS (eu-west
 
 ### Core Flow
 
-1. **Monday 9AM** — `announcement-sender` Lambda creates a game record in DynamoDB and emails all active players via SES
-2. **Players reply** to emails with natural language — SES Receipt Rules store raw emails in S3, triggering `email-processor` Lambda
-3. `email-processor` calls **AWS Bedrock (Claude Haiku)** to classify intent (JOIN/DECLINE/BRING_GUESTS/MAYBE/etc.), updates DynamoDB, and replies
-4. **Wednesday & Friday 9AM** — `reminder-checker` Lambda sends reminders (Wed) or confirms/cancels the game (Fri) based on confirmed player count vs. `MIN_PLAYERS` threshold (default: 6)
+Admin-driven, multi-game-per-week scheduling, orchestrated by Step Functions per game:
+
+1. **Monday 9AM UTC** — `weekly-scheduler` Lambda checks the `weekStatus` item for next week (7 days out); if fewer than `MAX_GAMES_PER_WEEK` games are scheduled, emails active admins asking whether to schedule game(s).
+2. **Admin replies** in natural language (e.g. "Tuesday and Saturday", "No games this week") — `admin-processor` calls Bedrock to parse `SCHEDULE_GAMES` (one or more `{date, startTime?, durationHours?}`) or `NO_GAMES_THIS_WEEK`. Each game is classified into a policy: neither field → default two-tier policy from config; both → fixed policy (equal tiers); exactly one → ambiguous, which holds the **whole batch** (nothing scheduled) and emails the admin to resend. For each valid game it creates the DynamoDB record (with policy) and starts a Step Functions execution named `game-{gameDate}`.
+3. **Tuesday 9PM UTC** — `weekly-cutoff-checker` Lambda: if the admin hasn't responded, marks the week `no_response` and emails all players that there's no game.
+4. **Per-game Step Functions execution** (`basketball-game-lifecycle`) drives the lifecycle via 4 Lambda tasks, each gated by the game still being `OPEN`:
+   - `announce_task` (T-7d) — tentative announcement rendered from the game's policy (two turnout branches when tiered, one line when fixed)
+   - `reminder_task` (T-4d) — low-signup reminder if confirmed < the policy's `minPlayers`
+   - `confirm_or_cancel_task` (T-2d) — go/no-go on the policy's `minPlayers`; resolves the tier from turnout and **freezes** `confirmedStartTime`/`confirmedDurationHours` onto the game record
+   - `finalize_task` (game day) — marks `PLAYED`, deletes guest Players-table entries
+5. **Players reply** to emails with natural language — SES Receipt Rules store raw emails in S3, triggering `email-processor` Lambda, which calls **AWS Bedrock (Claude Haiku)** to classify intent (JOIN/DECLINE/BRING_GUESTS/MAYBE/etc.), updates DynamoDB, and replies. When multiple games are open simultaneously, the reply is routed via a `[Game: YYYY-MM-DD]` subject marker, falling back to single-open-game inference or a clarification request.
+6. **`CANCEL_GAME` admin command** stops the game's Step Functions execution in addition to notifying players.
 
 ### Lambda Functions (`src/`)
 
-- `announcement_sender/handler.py` — Creates game + sends announcement emails (skips if pre-cancelled by admin)
+- `weekly_scheduler/handler.py` — Monday prompt to admins for next week's games
+- `weekly_cutoff_checker/handler.py` — Tuesday cutoff; no-game fallback if admin didn't respond
+- `game_lifecycle/announce_task.py`, `reminder_task.py`, `confirm_or_cancel_task.py`, `finalize_task.py` — Step Functions task Lambdas for the per-game lifecycle
 - `email_processor/handler.py` — Parses S3-stored inbound email, calls Bedrock for NLU, updates roster, replies
-- `reminder_checker/handler.py` — Counts confirmed players; sends reminders Wed, confirms or cancels Fri
-- `admin_processor/handler.py` — Processes admin command emails (cancel game, add/deactivate/reactivate players)
+- `admin_processor/handler.py` — Processes admin command emails (schedule/cancel games, add/deactivate/reactivate players)
 
 ### Shared Modules (`src/common/`)
 
 - `config.py` — `Config` dataclass loaded from environment variables
-- `dynamo.py` — All DynamoDB operations (create game, get/update roster, get pending players)
+- `date_utils.py` — `week_start_for_date()`, `sfn_timestamps_for_game()`
+- `dynamo.py` — All DynamoDB operations (create game, get/update roster, get pending players, weekStatus helpers, get_open_games)
 - `email_service.py` — SES send layer with templates for all email types
-- `bedrock_client.py` — Bedrock integration; returns structured JSON `{intent, guest_count, guest_names, query_target, reply_draft}`
+- `bedrock_client.py` — Bedrock integration; `parse_player_email` returns structured JSON `{intent, guests, confirmed_guest_names, query_target, reply_draft}`; `parse_admin_email` returns `{intent, game_date, email, name, is_admin, games}` where each game is `{date, startTime|null, durationHours|null}` (unmentioned timing is reported as null, never defaulted)
+- `policy.py` — per-game policy helpers: `default_policy()`, `fixed_policy()`, `resolve_tier()` (shared by announce + confirm), `is_fixed()`
 
 ### DynamoDB Data Model
 
 **Players table:** PK=`email`, SK=`active`
 
-**Games table** (single-table): PK=`gameDate` (YYYY-MM-DD), SK varies:
-- `gameStatus` → `{status: OPEN|CANCELLED|PLAYED, createdAt}`
+**Games table** (single-table): PK attribute is `pk`, an **entity-prefixed** value, SK varies:
+- game rows: `pk = GAME#<ISO date>` (e.g. `GAME#2026-06-27`)
+- week-status row: `pk = WEEK#<ISO Monday>` (e.g. `WEEK#2026-06-29`)
+
+The prefix (`GAME#`/`WEEK#`) is an **internal storage detail confined to `common/dynamo.py`** — built via the `game_pk()`/`week_pk()` helpers and stripped on read by `strip_pk()`. Every other layer (handlers, Step Functions input, the `game-{date}` execution name, email templates) deals in bare ISO dates, and read functions (`get_game_status`, `get_open_games`) still expose a bare `gameDate` field. The prefix exists because the old `gameDate` PK attribute lied: the `weekStatus` counter row is keyed by a Monday week-start, not a game date, which repeatedly misled readers into thinking the wrong date was stored. The Monday-keyed `weekStatus` row is intentional — its `Update`/`if_not_exists` upsert must accumulate `gameCount` across multiple games per week.
+
+SK values are unchanged:
+- `gameStatus` → `{status: OPEN|CANCELLED|PLAYED, createdAt, policy, confirmedStartTime?, confirmedDurationHours?}` — `policy` is `{minPlayers, threshold, longGame:{startTime,durationHours}, shortGame:{startTime,durationHours}}` (a fixed game has equal tiers); the `confirmed*` fields are frozen at the confirm step
 - `playerStatus#YES` → map of `{email: {guests: [...]}}`
 - `playerStatus#NO` → map of `{email: {}}`
 - `playerStatus#MAYBE` → map of `{email: {}}`
+- `weekStatus` (on the `WEEK#<Monday>` partition) → `{gameCount, adminResponded, reason?: no_response|admin_declined}` — additive, incremented atomically by `create_game()`
 
 ### Infrastructure (`terraform/`)
 
-Provisions: EventBridge cron rules, 3 Lambda functions, SES domain + receipt rules, S3 bucket (email storage), DynamoDB tables, Route 53 MX records, IAM roles.
+Provisions: EventBridge cron rules, 8 Lambda functions, a Step Functions state machine (`basketball-game-lifecycle`), SES domain + receipt rules, S3 bucket (email storage), DynamoDB tables, Route 53 MX records, IAM roles.
 
-Key variables (set in `terraform.tfvars`): `domain_name`, `sender_email`, `admin_email`, `game_time`, `game_location`, `bedrock_model_id`, `min_players`.
+Key variables (set in `terraform.tfvars`): `domain_name`, `sender_email`, `admin_email`, `game_location`, `bedrock_model_id`, `min_players`, `long_game_threshold`, `long_game_start_time`, `long_game_duration_hours`, `short_game_start_time`, `short_game_duration_hours`, `max_games_per_week`. The threshold and tier start/duration values seed each game's policy at creation; they are not read at runtime.
 
 ### Testing
 

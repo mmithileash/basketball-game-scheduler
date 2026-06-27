@@ -8,12 +8,6 @@ variable "sender_email" {
   type        = string
 }
 
-variable "game_time" {
-  description = "Default game time displayed in announcements"
-  type        = string
-  default     = "10:00 AM"
-}
-
 variable "game_location" {
   description = "Default game location displayed in announcements"
   type        = string
@@ -30,6 +24,42 @@ variable "min_players" {
   description = "Minimum number of confirmed players required for a game to proceed"
   type        = number
   default     = 6
+}
+
+variable "long_game_threshold" {
+  description = "Confirmed-player count at/above which the long-game tier applies (seeds each game's policy threshold)"
+  type        = number
+  default     = 10
+}
+
+variable "long_game_start_time" {
+  description = "Default long-game (well-attended) start time, display string (seeds each game's policy)"
+  type        = string
+  default     = "10:00 AM"
+}
+
+variable "long_game_duration_hours" {
+  description = "Default long-game (well-attended) duration in hours (seeds each game's policy)"
+  type        = number
+  default     = 2
+}
+
+variable "short_game_start_time" {
+  description = "Default short-game (thinly-attended) start time, display string (seeds each game's policy)"
+  type        = string
+  default     = "11:00 AM"
+}
+
+variable "short_game_duration_hours" {
+  description = "Default short-game (thinly-attended) duration in hours (seeds each game's policy)"
+  type        = number
+  default     = 1
+}
+
+variable "max_games_per_week" {
+  description = "Maximum games per week before the Monday admin prompt is suppressed"
+  type        = number
+  default     = 1
 }
 
 variable "environment" {

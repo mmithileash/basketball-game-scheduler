@@ -1,7 +1,29 @@
 import email
+from email import policy
 from html.parser import HTMLParser
 
+import boto3
 from email_reply_parser import EmailReplyParser
+
+_s3_client = None
+
+
+def _get_s3_client():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3")
+    return _s3_client
+
+
+def fetch_email_from_s3(bucket: str, key: str) -> tuple[str, str, str]:
+    """Fetch a raw email from S3 and return (sender_email, subject, body)."""
+    response = _get_s3_client().get_object(Bucket=bucket, Key=key)
+    msg = email.message_from_bytes(response["Body"].read(), policy=policy.default)
+    return (
+        extract_sender_email(msg.get("From", "")),
+        msg.get("Subject", ""),
+        extract_email_body(msg),
+    )
 
 
 def extract_sender_email(from_header: str) -> str:

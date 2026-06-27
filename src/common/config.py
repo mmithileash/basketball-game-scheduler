@@ -9,10 +9,15 @@ class Config:
     email_bucket: str
     sender_email: str
     admin_email: str
-    game_time: str
     game_location: str
     bedrock_model_id: str
     min_players: int
+    long_game_threshold: int
+    long_game_start_time: str
+    long_game_duration_hours: int
+    short_game_start_time: str
+    short_game_duration_hours: int
+    max_games_per_week: int
 
 
 def load_config() -> Config:
@@ -22,10 +27,15 @@ def load_config() -> Config:
         email_bucket=os.environ["EMAIL_BUCKET"],
         sender_email=os.environ["SENDER_EMAIL"],
         admin_email=os.environ["ADMIN_EMAIL"],
-        game_time=os.environ.get("GAME_TIME", "10:00 AM"),
         game_location=os.environ.get("GAME_LOCATION", "TBD"),
         bedrock_model_id=os.environ.get(
             "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
         ),
         min_players=int(os.environ.get("MIN_PLAYERS", "6")),
+        long_game_threshold=int(os.environ.get("LONG_GAME_THRESHOLD", "10")),
+        long_game_start_time=os.environ.get("LONG_GAME_START_TIME", "10:00 AM"),
+        long_game_duration_hours=int(os.environ.get("LONG_GAME_DURATION_HOURS", "2")),
+        short_game_start_time=os.environ.get("SHORT_GAME_START_TIME", "11:00 AM"),
+        short_game_duration_hours=int(os.environ.get("SHORT_GAME_DURATION_HOURS", "1")),
+        max_games_per_week=int(os.environ.get("MAX_GAMES_PER_WEEK", "1")),
     )

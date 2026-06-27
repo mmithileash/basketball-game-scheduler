@@ -250,3 +250,87 @@ def test_parse_admin_email_exception_returns_unknown(mocker):
     assert result["email"] is None
     assert result["name"] is None
     assert result["is_admin"] is None
+
+
+def _make_admin_bedrock_response(mocker, payload: dict):
+    mock_response = {
+        "body": mocker.MagicMock(
+            read=lambda: json.dumps({"content": [{"text": json.dumps(payload)}]}).encode()
+        )
+    }
+    mocker.patch(
+        "common.bedrock_client._get_bedrock_client"
+    ).return_value.invoke_model.return_value = mock_response
+
+
+@pytest.mark.unit
+def test_parse_admin_email_schedule_games(mocker):
+    _make_admin_bedrock_response(mocker, {
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None},
+            {"date": "2026-07-10", "startTime": "9:00 AM", "durationHours": 2},
+        ],
+    })
+
+    result = parse_admin_email("Schedule Tuesday, and Friday 2 hours from 9am", "admin@example.com")
+
+    assert result["intent"] == "SCHEDULE_GAMES"
+    assert len(result["games"]) == 2
+    assert result["games"][0]["date"] == "2026-07-07"
+    # Unmentioned timing is reported as null, not defaulted
+    assert result["games"][0]["startTime"] is None
+    assert result["games"][0]["durationHours"] is None
+    assert result["games"][1]["startTime"] == "9:00 AM"
+    assert result["games"][1]["durationHours"] == 2
+
+
+@pytest.mark.unit
+def test_parse_admin_email_schedule_games_reports_unmentioned_timing_as_null(mocker):
+    """A bare date with no timing keys comes back with startTime/durationHours None."""
+    _make_admin_bedrock_response(mocker, {
+        "intent": "SCHEDULE_GAMES",
+        "games": [{"date": "2026-07-07"}],
+    })
+
+    result = parse_admin_email("Schedule Tuesday", "admin@example.com")
+
+    assert result["games"][0] == {"date": "2026-07-07", "startTime": None, "durationHours": None}
+
+
+@pytest.mark.unit
+def test_parse_admin_email_no_games_this_week(mocker):
+    _make_admin_bedrock_response(mocker, {
+        "intent": "NO_GAMES_THIS_WEEK",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [],
+    })
+
+    result = parse_admin_email("No games this week", "admin@example.com")
+
+    assert result["intent"] == "NO_GAMES_THIS_WEEK"
+    assert result["games"] == []
+
+
+@pytest.mark.unit
+def test_parse_admin_email_cancel_game_includes_games_field(mocker):
+    """CANCEL_GAME response includes games=[] (backward compat)."""
+    _make_admin_bedrock_response(mocker, {
+        "intent": "CANCEL_GAME",
+        "game_date": "2026-07-07",
+        "email": None,
+        "name": None,
+        "is_admin": None,
+    })
+
+    result = parse_admin_email("Cancel the game on July 7", "admin@example.com")
+
+    assert result["intent"] == "CANCEL_GAME"
+    assert result["games"] == []

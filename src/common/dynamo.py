@@ -6,9 +6,32 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from common.config import load_config
-from common.date_utils import next_saturday
+from common.date_utils import week_start_for_date
 
 logger = logging.getLogger(__name__)
+
+# Entity tokens for the Games table partition key. The `pk` attribute holds a
+# prefixed value so a key announces its entity type (game vs. week-status row)
+# without tracing the sort key. The prefix is an internal storage detail: every
+# other layer deals in bare ISO dates.
+GAME_PREFIX = "GAME#"
+WEEK_PREFIX = "WEEK#"
+
+
+def game_pk(game_date: str) -> str:
+    """Build the Games-table partition value for a game row from a bare ISO date."""
+    return f"{GAME_PREFIX}{game_date}"
+
+
+def week_pk(week_start: str) -> str:
+    """Build the Games-table partition value for a week-status row from a bare ISO Monday."""
+    return f"{WEEK_PREFIX}{week_start}"
+
+
+def strip_pk(pk_value: str) -> str:
+    """Return the bare ISO date from a prefixed partition value (GAME#/WEEK#)."""
+    return pk_value.split("#", 1)[1]
+
 
 _config = None
 _dynamodb = None
@@ -83,57 +106,86 @@ def get_active_admins() -> list[dict[str, Any]]:
     return [{"email": item["email"], "name": item.get("name")} for item in items]
 
 
-def create_game(game_date: str) -> None:
-    """Create a new game with status OPEN and empty player status items."""
+def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
+    """Create a new game with status OPEN and atomically increment the week's gameCount.
+
+    The game's policy is stored as a map on the gameStatus item. When no policy
+    is supplied, a default two-tier policy is seeded from configuration so the
+    policy block is always present on the record.
+    """
     config = _get_config()
     client = _get_client()
     now = datetime.now(timezone.utc).isoformat()
+    week_start = week_start_for_date(date.fromisoformat(game_date)).isoformat()
 
-    items = [
+    if policy is None:
+        from common.policy import default_policy
+        policy = default_policy(config)
+
+    pk = game_pk(game_date)
+    client.transact_write_items(TransactItems=[
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "gameStatus"},
                     "status": {"S": "OPEN"},
                     "createdAt": {"S": now},
-                }
+                    "policy": _to_ddb_attr(policy),
+                },
             }
         },
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "playerStatus#YES"},
                     "players": {"M": {}},
                     "guests": {"L": []},
-                }
+                },
             }
         },
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "playerStatus#NO"},
                     "players": {"M": {}},
                     "guests": {"L": []},
-                }
+                },
             }
         },
         {
-            "PutRequest": {
+            "Put": {
+                "TableName": config.games_table,
                 "Item": {
-                    "gameDate": {"S": game_date},
+                    "pk": {"S": pk},
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
                     "guests": {"L": []},
-                }
+                },
             }
         },
-    ]
-
-    client.batch_write_item(RequestItems={config.games_table: items})
-    logger.info("Created game for %s", game_date)
+        {
+            "Update": {
+                "TableName": config.games_table,
+                "Key": {"pk": {"S": week_pk(week_start)}, "sk": {"S": "weekStatus"}},
+                "UpdateExpression": (
+                    "SET gameCount = if_not_exists(gameCount, :zero) + :one, "
+                    "adminResponded = :true"
+                ),
+                "ExpressionAttributeValues": {
+                    ":zero": {"N": "0"},
+                    ":one": {"N": "1"},
+                    ":true": {"BOOL": True},
+                },
+            }
+        },
+    ])
+    logger.info("Created game for %s (week: %s)", game_date, week_start)
 
 
 def get_game_status(game_date: str) -> dict[str, Any] | None:
@@ -142,10 +194,11 @@ def get_game_status(game_date: str) -> dict[str, Any] | None:
     table = _get_resource().Table(config.games_table)
 
     response = table.get_item(
-        Key={"gameDate": game_date, "sk": "gameStatus"}
+        Key={"pk": game_pk(game_date), "sk": "gameStatus"}
     )
     item = response.get("Item")
     if item:
+        item["gameDate"] = strip_pk(item.pop("pk"))
         logger.info("Game %s status: %s", game_date, item.get("status"))
     else:
         logger.info("No game found for %s", game_date)
@@ -166,7 +219,7 @@ def get_roster(game_date: str) -> dict[str, dict[str, Any]]:
 
     response = table.query(
         KeyConditionExpression=(
-            Key("gameDate").eq(game_date)
+            Key("pk").eq(game_pk(game_date))
             & Key("sk").begins_with("playerStatus#")
         )
     )
@@ -217,7 +270,7 @@ def update_player_response(
                     "Update": {
                         "TableName": config.games_table,
                         "Key": {
-                            "gameDate": {"S": game_date},
+                            "pk": {"S": game_pk(game_date)},
                             "sk": {"S": old_sk},
                         },
                         "UpdateExpression": "REMOVE players.#email",
@@ -228,7 +281,7 @@ def update_player_response(
                     "Update": {
                         "TableName": config.games_table,
                         "Key": {
-                            "gameDate": {"S": game_date},
+                            "pk": {"S": game_pk(game_date)},
                             "sk": {"S": new_sk},
                         },
                         "UpdateExpression": "SET players.#email = :val",
@@ -243,7 +296,7 @@ def update_player_response(
         client.update_item(
             TableName=config.games_table,
             Key={
-                "gameDate": {"S": game_date},
+                "pk": {"S": game_pk(game_date)},
                 "sk": {"S": new_sk},
             },
             UpdateExpression="SET players.#email = :val",
@@ -259,7 +312,7 @@ def update_game_status(game_date: str, status: str) -> None:
     table = _get_resource().Table(config.games_table)
 
     table.update_item(
-        Key={"gameDate": game_date, "sk": "gameStatus"},
+        Key={"pk": game_pk(game_date), "sk": "gameStatus"},
         UpdateExpression="SET #status = :val",
         ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues={":val": status},
@@ -267,26 +320,21 @@ def update_game_status(game_date: str, status: str) -> None:
     logger.info("Updated game %s status to %s", game_date, status)
 
 
-def get_upcoming_game() -> dict[str, Any] | None:
-    """Get the gameStatus item for the upcoming Saturday regardless of status.
+def freeze_game_schedule(game_date: str, start_time: str, duration_hours: int) -> None:
+    """Persist the resolved start time and duration onto the gameStatus item.
 
-    Returns the raw game record (with the ``status`` field intact, e.g. OPEN /
-    CANCELLED / PLAYED) or None if no record exists for that date. Callers that
-    only want games still accepting RSVPs should use ``get_current_open_game``
-    instead; callers that need to react differently to a cancelled game (e.g.
-    the email processor) should use this function and branch on ``status``.
+    Called at the confirmation step so the time players are told can never be
+    contradicted by later roster changes.
     """
-    return get_game_status(next_saturday().isoformat())
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
 
-
-def get_current_open_game() -> dict[str, Any] | None:
-    """Get the open game for the upcoming Saturday, or None if it isn't OPEN."""
-    item = get_upcoming_game()
-    if item and item.get("status") == "OPEN":
-        logger.info(f"Current open game: {item['gameDate']}")
-        return item
-    logger.info("No open game found for upcoming Saturday")
-    return None
+    table.update_item(
+        Key={"pk": game_pk(game_date), "sk": "gameStatus"},
+        UpdateExpression="SET confirmedStartTime = :st, confirmedDurationHours = :dur",
+        ExpressionAttributeValues={":st": start_time, ":dur": duration_hours},
+    )
+    logger.info("Froze schedule for %s: %s, %dh", game_date, start_time, duration_hours)
 
 
 def get_pending_players(game_date: str) -> list[dict[str, Any]]:
@@ -393,7 +441,7 @@ def add_guests_to_game_status(
 
     client.update_item(
         TableName=config.games_table,
-        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        Key={"pk": {"S": game_pk(game_date)}, "sk": {"S": f"playerStatus#{status}"}},
         UpdateExpression="SET #guests = list_append(if_not_exists(#guests, :empty), :new)",
         ExpressionAttributeNames={"#guests": "guests"},
         ExpressionAttributeValues={
@@ -419,7 +467,7 @@ def remove_sponsor_guests_from_status(
     client = _get_client()
 
     response = table.get_item(
-        Key={"gameDate": game_date, "sk": f"playerStatus#{status}"}
+        Key={"pk": game_pk(game_date), "sk": f"playerStatus#{status}"}
     )
     item = response.get("Item", {})
     all_guests: list[dict[str, Any]] = list(item.get("guests", []))
@@ -431,7 +479,7 @@ def remove_sponsor_guests_from_status(
 
     client.update_item(
         TableName=config.games_table,
-        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        Key={"pk": {"S": game_pk(game_date)}, "sk": {"S": f"playerStatus#{status}"}},
         UpdateExpression="SET #guests = :remaining",
         ExpressionAttributeNames={"#guests": "guests"},
         ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
@@ -458,7 +506,7 @@ def move_confirmed_guests(
     client = _get_client()
 
     response = table.get_item(
-        Key={"gameDate": game_date, "sk": "playerStatus#NO"}
+        Key={"pk": game_pk(game_date), "sk": "playerStatus#NO"}
     )
     item = response.get("Item", {})
     no_guests: list[dict[str, Any]] = list(item.get("guests", []))
@@ -481,7 +529,7 @@ def move_confirmed_guests(
         {
             "Update": {
                 "TableName": config.games_table,
-                "Key": {"gameDate": {"S": game_date}, "sk": {"S": "playerStatus#NO"}},
+                "Key": {"pk": {"S": game_pk(game_date)}, "sk": {"S": "playerStatus#NO"}},
                 "UpdateExpression": "SET #guests = :remaining",
                 "ExpressionAttributeNames": {"#guests": "guests"},
                 "ExpressionAttributeValues": {":remaining": {"L": remaining_ddb}},
@@ -490,7 +538,7 @@ def move_confirmed_guests(
         {
             "Update": {
                 "TableName": config.games_table,
-                "Key": {"gameDate": {"S": game_date}, "sk": {"S": "playerStatus#YES"}},
+                "Key": {"pk": {"S": game_pk(game_date)}, "sk": {"S": "playerStatus#YES"}},
                 "UpdateExpression": "SET #guests = list_append(if_not_exists(#guests, :empty), :moving)",
                 "ExpressionAttributeNames": {"#guests": "guests"},
                 "ExpressionAttributeValues": {
@@ -646,7 +694,7 @@ def remove_guest_from_status(game_date: str, status: str, guest_pk: str) -> dict
     client = _get_client()
 
     response = table.get_item(
-        Key={"gameDate": game_date, "sk": f"playerStatus#{status}"}
+        Key={"pk": game_pk(game_date), "sk": f"playerStatus#{status}"}
     )
     item = response.get("Item", {})
     all_guests: list[dict[str, Any]] = list(item.get("guests", []))
@@ -660,13 +708,62 @@ def remove_guest_from_status(game_date: str, status: str, guest_pk: str) -> dict
 
     client.update_item(
         TableName=config.games_table,
-        Key={"gameDate": {"S": game_date}, "sk": {"S": f"playerStatus#{status}"}},
+        Key={"pk": {"S": game_pk(game_date)}, "sk": {"S": f"playerStatus#{status}"}},
         UpdateExpression="SET #guests = :remaining",
         ExpressionAttributeNames={"#guests": "guests"},
         ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
     )
     logger.info(f"Removed guest pk={guest_pk} from playerStatus#{status} for {game_date}")
     return target
+
+
+def get_week_status(week_start_date: str) -> dict[str, Any] | None:
+    """Get the weekStatus item for a given Monday date (YYYY-MM-DD)."""
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    response = table.get_item(Key={"pk": week_pk(week_start_date), "sk": "weekStatus"})
+    item = response.get("Item")
+    if item:
+        item["weekStartDate"] = strip_pk(item.pop("pk"))
+    return item
+
+
+def set_week_no_game(week_start_date: str, reason: str) -> None:
+    """Mark a week as no-game (reason: 'no_response' or 'admin_declined')."""
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+    table.update_item(
+        Key={"pk": week_pk(week_start_date), "sk": "weekStatus"},
+        UpdateExpression="SET adminResponded = :true, #reason = :reason",
+        ExpressionAttributeNames={"#reason": "reason"},
+        ExpressionAttributeValues={":true": True, ":reason": reason},
+    )
+    logger.info(f"Week {week_start_date} marked no-game: {reason}")
+
+
+def get_open_games() -> list[dict[str, Any]]:
+    """Scan the Games table for all currently OPEN gameStatus items."""
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+
+    response = table.scan(
+        FilterExpression="sk = :sk AND #status = :open",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":sk": "gameStatus", ":open": "OPEN"},
+    )
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression="sk = :sk AND #status = :open",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":sk": "gameStatus", ":open": "OPEN"},
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+    for item in items:
+        item["gameDate"] = strip_pk(item.pop("pk"))
+    logger.info(f"Found {len(items)} open game(s)")
+    return items
 
 
 def pre_cancel_game(game_date: str) -> None:
@@ -680,7 +777,7 @@ def pre_cancel_game(game_date: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
 
     table.put_item(Item={
-        "gameDate": game_date,
+        "pk": game_pk(game_date),
         "sk": "gameStatus",
         "status": "CANCELLED",
         "createdAt": now,

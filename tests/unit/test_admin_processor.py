@@ -1,9 +1,4 @@
-import json
-from unittest.mock import MagicMock
-
-import boto3
 import pytest
-from moto import mock_aws
 
 from admin_processor.handler import handler
 
@@ -19,25 +14,18 @@ def _make_s3_event(bucket: str, key: str) -> dict:
     }
 
 
-def _make_raw_email(from_addr: str, subject: str, body: str) -> bytes:
-    return (
-        f"From: {from_addr}\r\n"
-        f"To: admin@example.com\r\n"
-        f"Subject: {subject}\r\n"
-        f"Content-Type: text/plain\r\n"
-        f"\r\n"
-        f"{body}"
-    ).encode()
+def _patch_s3(mocker, sender: str, subject: str, body: str):
+    return mocker.patch(
+        "admin_processor.handler.fetch_email_from_s3",
+        return_value=(sender, subject, body),
+    )
 
 
 @pytest.mark.unit
 def test_non_admin_sender_is_rejected(mocker):
     mocker.patch("admin_processor.handler.is_admin", return_value=False)
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("notadmin@example.com", "Cancel", "Cancel game"))
-    }
+    _patch_s3(mocker, "notadmin@example.com", "Cancel", "Cancel game")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -56,14 +44,12 @@ def test_cancel_game_advance_creates_cancelled_record(mocker):
         "email": None,
         "name": None,
         "is_admin": None,
+        "games": [],
     })
     mocker.patch("admin_processor.handler.get_game_status", return_value=None)
     mock_pre_cancel = mocker.patch("admin_processor.handler.pre_cancel_game")
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Cancel", "Cancel game on April 11"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel game on April 11")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -91,10 +77,7 @@ def test_cancel_game_open_updates_status_and_broadcasts(mocker):
     })
     mock_send = mocker.patch("admin_processor.handler.send_admin_cancelled_broadcast")
     mock_send_email = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Cancel", "Cancel game on April 11"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel game on April 11")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -118,10 +101,7 @@ def test_cancel_game_missing_date_sends_error(mocker):
         "is_admin": None,
     })
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Cancel", "Cancel the game"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel the game")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -142,10 +122,7 @@ def test_add_player_creates_record(mocker):
     })
     mock_add = mocker.patch("admin_processor.handler.add_player")
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Add", "Add player newplayer@example.com New Player"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Add", "Add player newplayer@example.com New Player")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -166,10 +143,7 @@ def test_add_admin_creates_admin_record(mocker):
     })
     mock_add = mocker.patch("admin_processor.handler.add_player")
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Add Admin", "Add admin newadmin@example.com New Admin"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Add Admin", "Add admin newadmin@example.com New Admin")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -189,10 +163,7 @@ def test_deactivate_player(mocker):
     })
     mock_deactivate = mocker.patch("admin_processor.handler.deactivate_player")
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Remove", "Deactivate alice@example.com"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Remove", "Deactivate alice@example.com")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -212,10 +183,7 @@ def test_reactivate_player(mocker):
     })
     mock_reactivate = mocker.patch("admin_processor.handler.reactivate_player")
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Reactivate", "Reactivate alice@example.com"))
-    }
+    _patch_s3(mocker, "admin@example.com", "Reactivate", "Reactivate alice@example.com")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -234,10 +202,7 @@ def test_unknown_intent_sends_error_reply(mocker):
         "is_admin": None,
     })
     mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "??", "blahrgh"))
-    }
+    _patch_s3(mocker, "admin@example.com", "??", "blahrgh")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -273,11 +238,8 @@ def test_cancel_game_notifies_guests_with_contact_email(mocker):
         "is_admin": None,
     })
     mock_broadcast = mocker.patch("admin_processor.handler.send_admin_cancelled_broadcast")
-    mock_send = mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: _make_raw_email("admin@example.com", "Cancel", "Cancel game 2026-04-19"))
-    }
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel game 2026-04-19")
 
     result = handler(_make_s3_event("test-email-bucket", "admin/somefile"), None)
 
@@ -300,6 +262,7 @@ def test_cancel_game_broadcast_includes_unsubscribe_for_players_not_guests(mocke
         "email": None,
         "name": None,
         "is_admin": None,
+        "games": [],
     })
     mocker.patch("admin_processor.handler.get_game_status",
                  return_value={"status": "OPEN"})
@@ -316,12 +279,7 @@ def test_cancel_game_broadcast_includes_unsubscribe_for_players_not_guests(mocke
     })
     mock_broadcast = mocker.patch("admin_processor.handler.send_admin_cancelled_broadcast")
     mocker.patch("admin_processor.handler.send_email")
-    mock_s3 = mocker.patch("admin_processor.handler._get_s3_client")
-    mock_s3.return_value.get_object.return_value = {
-        "Body": MagicMock(read=lambda: (
-            b"From: admin@example.com\r\nTo: x\r\nSubject: Cancel\r\n\r\nCancel 2026-04-19"
-        ))
-    }
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel 2026-04-19")
 
     handler(_make_s3_event("test-email-bucket", "admin/x"), None)
 
@@ -334,3 +292,255 @@ def test_cancel_game_broadcast_includes_unsubscribe_for_players_not_guests(mocke
     guest_calls = [c for c in mock_broadcast.call_args_list if c[0][0] == "john@example.com"]
     assert len(guest_calls) == 1
     assert not guest_calls[0].kwargs.get("include_unsubscribe", False)
+
+
+# ---------------------------------------------------------------------------
+# SCHEDULE_GAMES
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_schedule_games_unspecified_creates_default_two_tier_policy(mocker):
+    """A game with neither time nor duration seeds a default (non-fixed) policy."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None},
+            {"date": "2026-07-10", "startTime": None, "durationHours": None},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday and Thursday")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    assert mock_create.call_count == 2
+    dates = {call[0][0] for call in mock_create.call_args_list}
+    assert dates == {"2026-07-07", "2026-07-10"}
+    # Each game seeded with a two-tier (non-fixed) policy
+    from common.policy import is_fixed
+    for call in mock_create.call_args_list:
+        policy = call[0][1]
+        assert is_fixed(policy) is False
+        assert policy["longGame"] != policy["shortGame"]
+    assert mock_sfn.start_execution.call_count == 2
+    mock_send.assert_called_once()
+
+
+@pytest.mark.unit
+def test_schedule_games_fully_specified_creates_fixed_policy(mocker):
+    """A game with both time and duration seeds a fixed policy (equal tiers)."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [
+            {"date": "2026-07-11", "startTime": "9:00 AM", "durationHours": 2},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday, 2 hours from 9am")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    game_date, policy = mock_create.call_args[0]
+    assert game_date == "2026-07-11"
+    from common.policy import is_fixed
+    assert is_fixed(policy) is True
+    assert policy["longGame"] == {"startTime": "9:00 AM", "durationHours": 2}
+    assert policy["shortGame"] == {"startTime": "9:00 AM", "durationHours": 2}
+    assert mock_sfn.start_execution.call_count == 1
+
+
+@pytest.mark.unit
+def test_schedule_games_partial_holds_whole_batch(mocker):
+    """A partial game (only one of time/duration) holds the entire batch."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None},
+            {"date": "2026-07-11", "startTime": "9:00 AM", "durationHours": None},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday, and Saturday from 9am")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    # No games created, no lifecycle executions started
+    mock_create.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
+    # A single clarification email is sent, naming the partial game and missing field
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "2026-07-11" in body
+    assert "duration" in body.lower()
+
+
+@pytest.mark.unit
+def test_schedule_games_sfn_already_exists_is_noop(mocker):
+    """ExecutionAlreadyExists during start_execution is silently ignored."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [{"date": "2026-07-07", "startTime": None, "durationHours": None}],
+    })
+    mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mock_sfn.start_execution.side_effect = mock_sfn.exceptions.ExecutionAlreadyExists(
+        {"Error": {"Code": "ExecutionAlreadyExists", "Message": "already exists"}}, "StartExecution"
+    )
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+
+
+@pytest.mark.unit
+def test_schedule_games_empty_parse_sends_error(mocker):
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [],
+    })
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "umm maybe")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    assert "parse" in mock_send.call_args[0][2].lower() or "date" in mock_send.call_args[0][2].lower()
+
+
+# ---------------------------------------------------------------------------
+# NO_GAMES_THIS_WEEK
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_no_games_this_week_notifies_all_players(mocker):
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "NO_GAMES_THIS_WEEK",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [],
+    })
+    mock_set_no_game = mocker.patch("admin_processor.handler.set_week_no_game")
+    mocker.patch(
+        "admin_processor.handler.get_active_players",
+        return_value=[
+            {"email": "alice@example.com", "name": "Alice"},
+            {"email": "bob@example.com", "name": "Bob"},
+        ],
+    )
+    mock_notify = mocker.patch("admin_processor.handler.send_no_game_this_week")
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re:", "No games this week")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_set_no_game.assert_called_once()
+    _, reason = mock_set_no_game.call_args[0]
+    assert reason == "admin_declined"
+    assert mock_notify.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# CANCEL_GAME + SFN stop (Slice 5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_cancel_game_stops_sfn_execution(mocker):
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "CANCEL_GAME",
+        "game_date": "2026-07-07",
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [],
+    })
+    mocker.patch("admin_processor.handler.get_game_status", return_value={"status": "OPEN"})
+    mocker.patch("admin_processor.handler.update_game_status")
+    mocker.patch("admin_processor.handler.get_roster", return_value={
+        "YES": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel 2026-07-07")
+
+    handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    mock_sfn.stop_execution.assert_called_once()
+    call_kwargs = mock_sfn.stop_execution.call_args[1]
+    assert "game-2026-07-07" in call_kwargs["executionArn"]
+
+
+@pytest.mark.unit
+def test_cancel_game_sfn_not_found_is_ignored(mocker):
+    """ExecutionDoesNotExist from stop_execution is silently ignored."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "CANCEL_GAME",
+        "game_date": "2026-07-07",
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [],
+    })
+    mocker.patch("admin_processor.handler.get_game_status", return_value={"status": "OPEN"})
+    mocker.patch("admin_processor.handler.update_game_status")
+    mocker.patch("admin_processor.handler.get_roster", return_value={
+        "YES": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mock_sfn = mocker.MagicMock()
+    mock_sfn.stop_execution.side_effect = Exception("ExecutionDoesNotExist: does not exist")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Cancel", "Cancel 2026-07-07")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200

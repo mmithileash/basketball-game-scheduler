@@ -1,6 +1,6 @@
-resource "aws_scheduler_schedule" "announcement_sender" {
-  name        = "basketball-announcement-sender"
-  description = "Triggers announcement-sender Lambda every Monday at 9AM UTC"
+resource "aws_scheduler_schedule" "weekly_scheduler" {
+  name        = "basketball-weekly-scheduler"
+  description = "Triggers weekly-scheduler Lambda every Monday at 9AM UTC to prompt admins"
 
   flexible_time_window {
     mode = "OFF"
@@ -10,24 +10,24 @@ resource "aws_scheduler_schedule" "announcement_sender" {
   schedule_expression_timezone = "UTC"
 
   target {
-    arn      = aws_lambda_function.announcement_sender.arn
+    arn      = aws_lambda_function.weekly_scheduler.arn
     role_arn = aws_iam_role.scheduler_execution.arn
   }
 }
 
-resource "aws_scheduler_schedule" "reminder_checker" {
-  name        = "basketball-reminder-checker"
-  description = "Triggers reminder-checker Lambda every Wednesday and Friday at 9AM UTC"
+resource "aws_scheduler_schedule" "weekly_cutoff_checker" {
+  name        = "basketball-weekly-cutoff-checker"
+  description = "Triggers weekly-cutoff-checker Lambda every Tuesday at 9PM UTC"
 
   flexible_time_window {
     mode = "OFF"
   }
 
-  schedule_expression          = "cron(0 9 ? * WED,FRI *)"
+  schedule_expression          = "cron(0 21 ? * TUE *)"
   schedule_expression_timezone = "UTC"
 
   target {
-    arn      = aws_lambda_function.reminder_checker.arn
+    arn      = aws_lambda_function.weekly_cutoff_checker.arn
     role_arn = aws_iam_role.scheduler_execution.arn
   }
 }
@@ -54,23 +54,6 @@ resource "aws_iam_role" "scheduler_execution" {
   }
 }
 
-resource "aws_scheduler_schedule" "game_finalizer" {
-  name        = "basketball-game-finalizer"
-  description = "Triggers game-finalizer Lambda every Saturday at 13:00 UTC"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  schedule_expression          = "cron(0 13 ? * SAT *)"
-  schedule_expression_timezone = "UTC"
-
-  target {
-    arn      = aws_lambda_function.game_finalizer.arn
-    role_arn = aws_iam_role.scheduler_execution.arn
-  }
-}
-
 resource "aws_iam_role_policy" "scheduler_invoke_lambda" {
   name = "invoke-lambda-functions"
   role = aws_iam_role.scheduler_execution.id
@@ -82,9 +65,8 @@ resource "aws_iam_role_policy" "scheduler_invoke_lambda" {
         Effect = "Allow"
         Action = "lambda:InvokeFunction"
         Resource = [
-          aws_lambda_function.announcement_sender.arn,
-          aws_lambda_function.reminder_checker.arn,
-          aws_lambda_function.game_finalizer.arn,
+          aws_lambda_function.weekly_scheduler.arn,
+          aws_lambda_function.weekly_cutoff_checker.arn,
         ]
       }
     ]

@@ -1,26 +1,31 @@
 locals {
   lambda_functions = {
-    announcement_sender = "announcement-sender"
-    email_processor     = "email-processor"
-    reminder_checker    = "reminder-checker"
-    game_finalizer      = "game-finalizer"
-    admin_processor     = "admin-processor"
+    weekly_scheduler      = "weekly-scheduler"
+    weekly_cutoff_checker = "weekly-cutoff-checker"
+    email_processor       = "email-processor"
+    admin_processor       = "admin-processor"
   }
 
   lambda_env_vars = {
-    PLAYERS_TABLE    = aws_dynamodb_table.players.name
-    GAMES_TABLE      = aws_dynamodb_table.games.name
-    EMAIL_BUCKET     = aws_s3_bucket.email_inbox.id
-    SENDER_EMAIL     = var.sender_email
-    GAME_TIME        = var.game_time
-    GAME_LOCATION    = var.game_location
-    BEDROCK_MODEL_ID = var.bedrock_model_id
-    MIN_PLAYERS      = tostring(var.min_players)
-    ADMIN_EMAIL = var.admin_email
+    PLAYERS_TABLE       = aws_dynamodb_table.players.name
+    GAMES_TABLE         = aws_dynamodb_table.games.name
+    EMAIL_BUCKET        = aws_s3_bucket.email_inbox.id
+    SENDER_EMAIL        = var.sender_email
+    GAME_LOCATION       = var.game_location
+    BEDROCK_MODEL_ID    = var.bedrock_model_id
+    MIN_PLAYERS         = tostring(var.min_players)
+    LONG_GAME_THRESHOLD = tostring(var.long_game_threshold)
+    LONG_GAME_START_TIME      = var.long_game_start_time
+    LONG_GAME_DURATION_HOURS  = tostring(var.long_game_duration_hours)
+    SHORT_GAME_START_TIME     = var.short_game_start_time
+    SHORT_GAME_DURATION_HOURS = tostring(var.short_game_duration_hours)
+    MAX_GAMES_PER_WEEK  = tostring(var.max_games_per_week)
+    ADMIN_EMAIL         = var.admin_email
   }
 
   lambda_admin_env_vars = merge(local.lambda_env_vars, {
-    SENDER_EMAIL = var.admin_email,
+    SENDER_EMAIL           = var.admin_email,
+    GAME_LIFECYCLE_SFN_ARN = aws_sfn_state_machine.game_lifecycle.arn,
   })
 }
 
@@ -32,28 +37,76 @@ locals {
 # archive_file cannot merge multiple source directories natively,
 # so we copy into a staging dir first, then zip with archive_file.
 
-resource "null_resource" "build_announcement_sender" {
+resource "null_resource" "build_weekly_scheduler" {
   triggers = {
     always_run = timestamp()
   }
 
   provisioner "local-exec" {
     command = <<-EOT
-      rm -rf ${path.module}/.build/announcement_sender
-      mkdir -p ${path.module}/.build/announcement_sender
-      cp -r ${path.module}/../src/common ${path.module}/.build/announcement_sender/common
-      cp -r ${path.module}/../src/announcement_sender/* ${path.module}/.build/announcement_sender/
-      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/announcement_sender --quiet
+      rm -rf ${path.module}/.build/weekly_scheduler
+      mkdir -p ${path.module}/.build/weekly_scheduler
+      cp -r ${path.module}/../src/common ${path.module}/.build/weekly_scheduler/common
+      cp -r ${path.module}/../src/weekly_scheduler/* ${path.module}/.build/weekly_scheduler/
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/weekly_scheduler --quiet
     EOT
   }
 }
 
-data "archive_file" "announcement_sender_zip" {
+data "archive_file" "weekly_scheduler_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/.build/announcement_sender"
-  output_path = "${path.module}/.build/announcement_sender.zip"
+  source_dir  = "${path.module}/.build/weekly_scheduler"
+  output_path = "${path.module}/.build/weekly_scheduler.zip"
 
-  depends_on = [null_resource.build_announcement_sender]
+  depends_on = [null_resource.build_weekly_scheduler]
+}
+
+resource "null_resource" "build_weekly_cutoff_checker" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/weekly_cutoff_checker
+      mkdir -p ${path.module}/.build/weekly_cutoff_checker
+      cp -r ${path.module}/../src/common ${path.module}/.build/weekly_cutoff_checker/common
+      cp -r ${path.module}/../src/weekly_cutoff_checker/* ${path.module}/.build/weekly_cutoff_checker/
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/weekly_cutoff_checker --quiet
+    EOT
+  }
+}
+
+data "archive_file" "weekly_cutoff_checker_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/weekly_cutoff_checker"
+  output_path = "${path.module}/.build/weekly_cutoff_checker.zip"
+
+  depends_on = [null_resource.build_weekly_cutoff_checker]
+}
+
+resource "null_resource" "build_game_lifecycle" {
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/game_lifecycle
+      mkdir -p ${path.module}/.build/game_lifecycle
+      cp -r ${path.module}/../src/common ${path.module}/.build/game_lifecycle/common
+      cp -r ${path.module}/../src/game_lifecycle/* ${path.module}/.build/game_lifecycle/
+      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_lifecycle --quiet
+    EOT
+  }
+}
+
+data "archive_file" "game_lifecycle_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/.build/game_lifecycle"
+  output_path = "${path.module}/.build/game_lifecycle.zip"
+
+  depends_on = [null_resource.build_game_lifecycle]
 }
 
 resource "null_resource" "build_email_processor" {
@@ -80,51 +133,127 @@ data "archive_file" "email_processor_zip" {
   depends_on = [null_resource.build_email_processor]
 }
 
-resource "null_resource" "build_reminder_checker" {
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      rm -rf ${path.module}/.build/reminder_checker
-      mkdir -p ${path.module}/.build/reminder_checker
-      cp -r ${path.module}/../src/common ${path.module}/.build/reminder_checker/common
-      cp -r ${path.module}/../src/reminder_checker/* ${path.module}/.build/reminder_checker/
-      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/reminder_checker --quiet
-    EOT
-  }
-}
-
-data "archive_file" "reminder_checker_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/.build/reminder_checker"
-  output_path = "${path.module}/.build/reminder_checker.zip"
-
-  depends_on = [null_resource.build_reminder_checker]
-}
-
 # -----------------------------------------------------------------------------
 # Lambda functions
 # -----------------------------------------------------------------------------
 
-resource "aws_lambda_function" "announcement_sender" {
-  function_name    = "basketball-announcement-sender"
-  description      = "Sends weekly game announcements every Monday"
+resource "aws_lambda_function" "weekly_scheduler" {
+  function_name    = "basketball-weekly-scheduler"
+  description      = "Prompts admins every Monday to schedule games for the following week"
   role             = aws_iam_role.lambda_execution.arn
   handler          = "handler.handler"
   runtime          = "python3.12"
   timeout          = 60
   memory_size      = 256
-  filename         = data.archive_file.announcement_sender_zip.output_path
-  source_code_hash = data.archive_file.announcement_sender_zip.output_base64sha256
+  filename         = data.archive_file.weekly_scheduler_zip.output_path
+  source_code_hash = data.archive_file.weekly_scheduler_zip.output_base64sha256
 
   environment {
     variables = local.lambda_env_vars
   }
 
   tags = {
-    Name = "basketball-announcement-sender"
+    Name = "basketball-weekly-scheduler"
+  }
+}
+
+resource "aws_lambda_function" "weekly_cutoff_checker" {
+  function_name    = "basketball-weekly-cutoff-checker"
+  description      = "Tuesday 9PM UTC cutoff — notifies players of no game if admin hasn't responded"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.weekly_cutoff_checker_zip.output_path
+  source_code_hash = data.archive_file.weekly_cutoff_checker_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_vars
+  }
+
+  tags = {
+    Name = "basketball-weekly-cutoff-checker"
+  }
+}
+
+resource "aws_lambda_function" "game_lifecycle_announce" {
+  function_name    = "basketball-game-lifecycle-announce"
+  description      = "SFN task: sends tentative game announcement 7 days before the game"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "announce_task.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.game_lifecycle_zip.output_path
+  source_code_hash = data.archive_file.game_lifecycle_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_vars
+  }
+
+  tags = {
+    Name = "basketball-game-lifecycle-announce"
+  }
+}
+
+resource "aws_lambda_function" "game_lifecycle_reminder" {
+  function_name    = "basketball-game-lifecycle-reminder"
+  description      = "SFN task: sends low-signup reminder 4 days before the game"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "reminder_task.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.game_lifecycle_zip.output_path
+  source_code_hash = data.archive_file.game_lifecycle_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_vars
+  }
+
+  tags = {
+    Name = "basketball-game-lifecycle-reminder"
+  }
+}
+
+resource "aws_lambda_function" "game_lifecycle_confirm_or_cancel" {
+  function_name    = "basketball-game-lifecycle-confirm-or-cancel"
+  description      = "SFN task: confirms or cancels the game 2 days before, locking in duration"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "confirm_or_cancel_task.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.game_lifecycle_zip.output_path
+  source_code_hash = data.archive_file.game_lifecycle_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_vars
+  }
+
+  tags = {
+    Name = "basketball-game-lifecycle-confirm-or-cancel"
+  }
+}
+
+resource "aws_lambda_function" "game_lifecycle_finalize" {
+  function_name    = "basketball-game-lifecycle-finalize"
+  description      = "SFN task: marks the game PLAYED and cleans up guest entries"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "finalize_task.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.game_lifecycle_zip.output_path
+  source_code_hash = data.archive_file.game_lifecycle_zip.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_vars
+  }
+
+  tags = {
+    Name = "basketball-game-lifecycle-finalize"
   }
 }
 
@@ -145,70 +274,6 @@ resource "aws_lambda_function" "email_processor" {
 
   tags = {
     Name = "basketball-email-processor"
-  }
-}
-
-resource "aws_lambda_function" "reminder_checker" {
-  function_name    = "basketball-reminder-checker"
-  description      = "Checks player count and sends reminders on Wed/Fri if minimum not met"
-  role             = aws_iam_role.lambda_execution.arn
-  handler          = "handler.handler"
-  runtime          = "python3.12"
-  timeout          = 60
-  memory_size      = 256
-  filename         = data.archive_file.reminder_checker_zip.output_path
-  source_code_hash = data.archive_file.reminder_checker_zip.output_base64sha256
-
-  environment {
-    variables = local.lambda_env_vars
-  }
-
-  tags = {
-    Name = "basketball-reminder-checker"
-  }
-}
-
-resource "null_resource" "build_game_finalizer" {
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      rm -rf ${path.module}/.build/game_finalizer
-      mkdir -p ${path.module}/.build/game_finalizer
-      cp -r ${path.module}/../src/common ${path.module}/.build/game_finalizer/common
-      cp -r ${path.module}/../src/game_finalizer/* ${path.module}/.build/game_finalizer/
-      python3 -m pip install -r ${path.module}/../requirements-runtime.txt -t ${path.module}/.build/game_finalizer --quiet
-    EOT
-  }
-}
-
-data "archive_file" "game_finalizer_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/.build/game_finalizer"
-  output_path = "${path.module}/.build/game_finalizer.zip"
-
-  depends_on = [null_resource.build_game_finalizer]
-}
-
-resource "aws_lambda_function" "game_finalizer" {
-  function_name    = "basketball-game-finalizer"
-  description      = "Marks Saturday games as PLAYED at 13:00 UTC"
-  role             = aws_iam_role.lambda_execution.arn
-  handler          = "handler.handler"
-  runtime          = "python3.12"
-  timeout          = 60
-  memory_size      = 256
-  filename         = data.archive_file.game_finalizer_zip.output_path
-  source_code_hash = data.archive_file.game_finalizer_zip.output_base64sha256
-
-  environment {
-    variables = local.lambda_env_vars
-  }
-
-  tags = {
-    Name = "basketball-game-finalizer"
   }
 }
 

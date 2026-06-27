@@ -9,20 +9,26 @@ from common.dynamo import (
     add_guests_to_game_status,
     add_player,
     create_game,
+    game_pk,
+    week_pk,
+    strip_pk,
     create_guest_entry,
     deactivate_player,
     delete_guest_entries,
+    freeze_game_schedule,
     get_active_players,
-    get_current_open_game,
     get_game_status,
+    get_open_games,
     get_pending_players,
     get_player_name,
     get_roster,
+    get_week_status,
     is_admin,
     move_confirmed_guests,
     pre_cancel_game,
     reactivate_player,
     remove_sponsor_guests_from_status,
+    set_week_no_game,
     update_game_status,
     update_player_response,
 )
@@ -48,11 +54,11 @@ def _create_tables():
     dynamodb.create_table(
         TableName="test-games",
         KeySchema=[
-            {"AttributeName": "gameDate", "KeyType": "HASH"},
+            {"AttributeName": "pk", "KeyType": "HASH"},
             {"AttributeName": "sk", "KeyType": "RANGE"},
         ],
         AttributeDefinitions=[
-            {"AttributeName": "gameDate", "AttributeType": "S"},
+            {"AttributeName": "pk", "AttributeType": "S"},
             {"AttributeName": "sk", "AttributeType": "S"},
         ],
         BillingMode="PAY_PER_REQUEST",
@@ -65,6 +71,34 @@ def _reset_dynamo_caches():
     dynamo_mod._config = None
     dynamo_mod._dynamodb = None
     dynamo_mod._client = None
+
+
+# ---------------------------------------------------------------------------
+# key-builder helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_game_pk_prefixes_iso_date():
+    """game_pk produces a GAME#-prefixed ISO value."""
+    assert game_pk("2026-06-27") == "GAME#2026-06-27"
+
+
+@pytest.mark.unit
+def test_week_pk_prefixes_iso_monday():
+    """week_pk produces a WEEK#-prefixed ISO value."""
+    assert week_pk("2026-06-29") == "WEEK#2026-06-29"
+
+
+@pytest.mark.unit
+def test_strip_pk_round_trips_game():
+    """strip_pk returns the bare ISO date from a GAME# value."""
+    assert strip_pk(game_pk("2026-06-27")) == "2026-06-27"
+
+
+@pytest.mark.unit
+def test_strip_pk_round_trips_week():
+    """strip_pk returns the bare ISO date from a WEEK# value."""
+    assert strip_pk(week_pk("2026-06-29")) == "2026-06-29"
 
 
 @pytest.mark.unit
@@ -101,7 +135,7 @@ def test_create_game(sample_game_date):
 
     table = dynamodb.Table("test-games")
     response = table.query(
-        KeyConditionExpression=boto3.dynamodb.conditions.Key("gameDate").eq(sample_game_date)
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("pk").eq(game_pk(sample_game_date))
     )
     items = response["Items"]
 
@@ -123,6 +157,59 @@ def test_create_game(sample_game_date):
         item = next(i for i in items if i["sk"] == sk)
         assert item["players"] == {}
         assert item["guests"] == []
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stores_explicit_policy(sample_game_date):
+    """A policy passed to create_game is stored on the gameStatus item."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    policy = {
+        "minPlayers": 5,
+        "threshold": 8,
+        "longGame": {"startTime": "9:00 AM", "durationHours": 2},
+        "shortGame": {"startTime": "9:00 AM", "durationHours": 2},
+    }
+    create_game(sample_game_date, policy)
+
+    item = get_game_status(sample_game_date)
+    assert item["policy"]["minPlayers"] == 5
+    assert item["policy"]["threshold"] == 8
+    assert item["policy"]["longGame"] == {"startTime": "9:00 AM", "durationHours": 2}
+    assert item["policy"]["shortGame"] == {"startTime": "9:00 AM", "durationHours": 2}
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_seeds_default_policy_when_omitted(sample_game_date):
+    """Omitting policy seeds a default two-tier policy so the block is always present."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date)
+
+    item = get_game_status(sample_game_date)
+    assert item["policy"]["minPlayers"] == 6
+    assert item["policy"]["threshold"] == 10
+    assert item["policy"]["longGame"]["durationHours"] == 2
+    assert item["policy"]["shortGame"]["durationHours"] == 1
+
+
+@pytest.mark.unit
+@mock_aws
+def test_freeze_game_schedule_persists_resolved_time_and_duration(sample_game_date):
+    """freeze_game_schedule writes the resolved start time and duration onto the game."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date)
+    freeze_game_schedule(sample_game_date, "10:00 AM", 2)
+
+    item = get_game_status(sample_game_date)
+    assert item["confirmedStartTime"] == "10:00 AM"
+    assert item["confirmedDurationHours"] == 2
 
 
 @pytest.mark.unit
@@ -212,68 +299,6 @@ def test_update_player_response_change(sample_game_date):
     assert "alice@example.com" not in roster["YES"]["players"]
     assert "alice@example.com" in roster["NO"]["players"]
 
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_found(mock_date, sample_game_date):
-    """Create OPEN game for upcoming Saturday, verify found."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)  # "2026-03-28" (Saturday)
-
-    result = get_current_open_game()
-    assert result is not None
-    assert result["gameDate"] == sample_game_date
-    assert result["status"] == "OPEN"
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_cancelled(mock_date, sample_game_date):
-    """CANCELLED game for upcoming Saturday should not be returned."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)
-    update_game_status(sample_game_date, "CANCELLED")
-
-    result = get_current_open_game()
-    assert result is None
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_no_game(mock_date):
-    """No game seeded, verify None returned."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    result = get_current_open_game()
-    assert result is None
-
-
-@pytest.mark.unit
-@mock_aws
-@patch("common.date_utils.date", wraps=date)
-def test_get_current_open_game_played(mock_date, sample_game_date):
-    """PLAYED game for upcoming Saturday should not be returned."""
-    mock_date.today.return_value = date(2026, 3, 25)  # Wednesday
-    _reset_dynamo_caches()
-    _create_tables()
-
-    create_game(sample_game_date)
-    update_game_status(sample_game_date, "PLAYED")
-
-    result = get_current_open_game()
-    assert result is None
 
 
 @pytest.mark.unit
@@ -665,7 +690,7 @@ def test_pre_cancel_game_creates_cancelled_record():
 
     dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
     table = dynamodb.Table("test-games")
-    item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
+    item = table.get_item(Key={"pk": game_pk("2026-04-11"), "sk": "gameStatus"})["Item"]
     assert item["status"] == "CANCELLED"
     assert "createdAt" in item
 
@@ -687,7 +712,7 @@ def test_pre_cancel_game_does_not_overwrite_open_game():
 
     dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
     table = dynamodb.Table("test-games")
-    item = table.get_item(Key={"gameDate": "2026-04-11", "sk": "gameStatus"})["Item"]
+    item = table.get_item(Key={"pk": game_pk("2026-04-11"), "sk": "gameStatus"})["Item"]
     assert item["status"] == "CANCELLED"
 
 
@@ -780,3 +805,116 @@ def test_remove_guest_from_status_not_found(sample_game_date):
 
     result = remove_guest_from_status(sample_game_date, "YES", "nobody@example.com")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# weekStatus helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_increments_week_game_count(sample_game_date):
+    """create_game atomically creates weekStatus item with gameCount=1."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game(sample_game_date)  # 2026-03-28 → week 2026-03-23
+
+    week_status = get_week_status("2026-03-23")
+    assert week_status is not None
+    assert int(week_status["gameCount"]) == 1
+    assert week_status["adminResponded"] is True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_twice_increments_game_count():
+    """Creating two games in the same week increments gameCount to 2."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-03-24")  # Tuesday — week 2026-03-23
+    create_game("2026-03-28")  # Saturday — same week
+
+    week_status = get_week_status("2026-03-23")
+    assert int(week_status["gameCount"]) == 2
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_week_status_returns_none_when_missing():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert get_week_status("2026-03-23") is None
+
+
+@pytest.mark.unit
+@mock_aws
+def test_set_week_no_game_sets_responded_and_reason():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    set_week_no_game("2026-03-23", "no_response")
+
+    week_status = get_week_status("2026-03-23")
+    assert week_status is not None
+    assert week_status["adminResponded"] is True
+    assert week_status["reason"] == "no_response"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_set_week_no_game_admin_declined():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    set_week_no_game("2026-03-23", "admin_declined")
+
+    week_status = get_week_status("2026-03-23")
+    assert week_status["reason"] == "admin_declined"
+
+
+# ---------------------------------------------------------------------------
+# get_open_games
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_get_open_games_returns_all_open():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-07-07")
+    create_game("2026-07-10")
+
+    open_games = get_open_games()
+    dates = {g["gameDate"] for g in open_games}
+    assert dates == {"2026-07-07", "2026-07-10"}
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_open_games_excludes_cancelled_and_played():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-07-07")
+    create_game("2026-07-10")
+    create_game("2026-07-14")
+
+    update_game_status("2026-07-07", "CANCELLED")
+    update_game_status("2026-07-10", "PLAYED")
+
+    open_games = get_open_games()
+    assert len(open_games) == 1
+    assert open_games[0]["gameDate"] == "2026-07-14"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_get_open_games_returns_empty_when_none():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert get_open_games() == []
