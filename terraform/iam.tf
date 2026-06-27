@@ -148,7 +148,13 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
         Action = [
           "bedrock:InvokeModel",
         ]
-        Resource = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/${var.bedrock_model_id}"
+        # bedrock_model_id is a cross-region inference profile (e.g. us.anthropic.claude-haiku-4-5-...).
+        # Invoking it requires permission on both the inference profile itself and the underlying
+        # foundation models in every region the profile may route to.
+        Resource = [
+          "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_model_id}",
+          "arn:aws:bedrock:*::foundation-model/${replace(var.bedrock_model_id, "/^[a-z]{2}\\./", "")}",
+        ]
       },
       {
         Effect = "Allow"

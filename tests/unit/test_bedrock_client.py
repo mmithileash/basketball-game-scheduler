@@ -334,3 +334,53 @@ def test_parse_admin_email_cancel_game_includes_games_field(mocker):
 
     assert result["intent"] == "CANCEL_GAME"
     assert result["games"] == []
+
+
+def _make_raw_admin_bedrock_response(mocker, raw_text: str):
+    """Mock a Bedrock admin response whose text is an arbitrary raw string."""
+    mock_response = {
+        "body": mocker.MagicMock(
+            read=lambda: json.dumps({"content": [{"text": raw_text}]}).encode()
+        )
+    }
+    mocker.patch(
+        "common.bedrock_client._get_bedrock_client"
+    ).return_value.invoke_model.return_value = mock_response
+
+
+@pytest.mark.unit
+def test_parse_admin_email_strips_markdown_fences(mocker):
+    """Haiku 4.5 wraps JSON in ```json ... ``` fences; these must be stripped."""
+    payload = {
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [{"date": "2026-07-07", "startTime": None, "durationHours": None}],
+    }
+    fenced = f"```json\n{json.dumps(payload, indent=2)}\n```"
+    _make_raw_admin_bedrock_response(mocker, fenced)
+
+    result = parse_admin_email("Schedule Tuesday", "admin@example.com")
+
+    assert result["intent"] == "SCHEDULE_GAMES"
+    assert result["games"][0]["date"] == "2026-07-07"
+
+
+@pytest.mark.unit
+def test_parse_player_email_strips_markdown_fences(mocker):
+    """Player NLU parsing must also tolerate fenced JSON responses."""
+    payload = {
+        "intent": "JOIN",
+        "guests": [],
+        "confirmed_guest_names": [],
+        "query_target": None,
+        "reply_draft": "Got it!",
+    }
+    fenced = f"```json\n{json.dumps(payload)}\n```"
+    _make_raw_admin_bedrock_response(mocker, fenced)
+
+    result = parse_player_email("I'm in!", "player@example.com", {"YES": {}, "NO": {}, "MAYBE": {}})
+
+    assert result["intent"] == "JOIN"
