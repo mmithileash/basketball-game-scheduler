@@ -576,3 +576,29 @@ def test_send_admin_unclear_notification_contains_player_and_raw_message(mocker)
     assert to == "admin@example.com"
     assert "bob@example.com" in body
     assert "yo can i maybe swing by idk lol" in body
+
+
+@pytest.mark.unit
+@mock_aws
+def test_final_confirmation_omits_player_emails(mocker):
+    """The confirmed-players list lists players by name only, never their
+    email addresses; an unnamed player shows a neutral placeholder."""
+    _setup_ses()
+    roster = {
+        "YES": {
+            "players": {
+                "alice@example.com": {"name": "Alice"},
+                "bob@example.com": {},
+            },
+            "guests": [],
+        },
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_final_confirmation_with_duration("player@example.com", "2026-04-12", roster, "10:00 AM", 2)
+    body = mock_send.call_args[0][2]
+    assert "Alice" in body
+    assert "A player" in body
+    assert "alice@example.com" not in body
+    assert "bob@example.com" not in body

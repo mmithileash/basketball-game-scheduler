@@ -100,9 +100,9 @@ def _format_roster_summary(roster: dict[str, Any]) -> str:
         guests = data.get("guests", [])
         if players or guests:
             lines = []
-            for player_email, pdata in players.items():
-                name = pdata.get("name") or player_email
-                lines.append(f"  - {name} ({player_email})")
+            for pdata in players.values():
+                name = pdata.get("name") or "A player"
+                lines.append(f"  - {name}")
             for guest in guests:
                 lines.append(f"  + Guest: {guest['name']} (via {guest['sponsorName']})")
             sections.append(f"{label} ({len(players)} players, {len(guests)} guests):\n" + "\n".join(lines))
