@@ -10,7 +10,7 @@ CSV format:
 The 'name' column is optional. If missing or empty, name is stored as null.
 
 Usage:
-    python scripts/import_players.py --csv-file scripts/sample_players.csv --table-name Players
+    python scripts/import_players.py --csv-file your_players.csv --table-name Players
 """
 
 import argparse
