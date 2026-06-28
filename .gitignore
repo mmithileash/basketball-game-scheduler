@@ -13,3 +13,4 @@ terraform.tfvars
 .venv/*
 __pycache__/
 *.pyc
+scripts/sample_players.csv
