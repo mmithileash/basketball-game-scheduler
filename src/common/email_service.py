@@ -442,9 +442,9 @@ def send_final_confirmation_with_duration(
 
     yes_data = roster.get("YES", {})
     lines: list[str] = []
-    for email, data in yes_data.get("players", {}).items():
-        name = data.get("name") or email
-        lines.append(f"  - {name} ({email})")
+    for data in yes_data.get("players", {}).values():
+        name = data.get("name") or "A player"
+        lines.append(f"  - {name}")
     for guest in yes_data.get("guests", []):
         lines.append(f"    + Guest: {guest['name']} (via {guest['sponsorName']})")
 

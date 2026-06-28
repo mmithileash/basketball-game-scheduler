@@ -1284,3 +1284,41 @@ def test_subject_marker_for_played_game_falls_through_to_open_games(mocker):
 
     assert result["statusCode"] == 200
     mock_update.assert_called_once_with("2026-07-07", "alice@example.com", "YES", name="Alice", old_status=None)
+
+
+@pytest.mark.unit
+def test_roster_summary_omits_player_emails():
+    """The roster summary shown in replies lists players by name only, never
+    their email addresses."""
+    from email_processor.handler import _format_roster_summary
+
+    roster = {
+        "YES": {"players": {"alice@example.com": {"name": "Alice"}}, "guests": []},
+        "NO": {"players": {"bob@example.com": {"name": "Bob"}}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+
+    summary = _format_roster_summary(roster)
+
+    assert "Alice" in summary
+    assert "Bob" in summary
+    assert "alice@example.com" not in summary
+    assert "bob@example.com" not in summary
+
+
+@pytest.mark.unit
+def test_roster_summary_unnamed_player_shows_placeholder():
+    """A player with no stored name appears as a neutral placeholder, never as
+    their email address."""
+    from email_processor.handler import _format_roster_summary
+
+    roster = {
+        "YES": {"players": {"bob@example.com": {}}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+
+    summary = _format_roster_summary(roster)
+
+    assert "A player" in summary
+    assert "bob@example.com" not in summary
