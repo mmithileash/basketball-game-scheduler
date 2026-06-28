@@ -150,7 +150,10 @@ resource "aws_lambda_function" "weekly_scheduler" {
   source_code_hash = data.archive_file.weekly_scheduler_zip.output_base64sha256
 
   environment {
-    variables = local.lambda_env_vars
+    # The weekly prompt asks the admin to reply with game dates, so it must be
+    # sent FROM admin_email — the reply then routes to admin/ (admin_processor)
+    # rather than inbound/ (email_processor).
+    variables = merge(local.lambda_env_vars, { SENDER_EMAIL = var.admin_email })
   }
 
   tags = {
