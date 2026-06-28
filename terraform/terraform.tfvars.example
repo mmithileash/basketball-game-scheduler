@@ -1,4 +1,6 @@
 domain_name   = "example.com"
 sender_email  = "aiagent@example.com"
-game_location = "Your Court / Venue"
+game_location = "Your Court / Venue, 1 Example St, City"
+# Optional: link the location to a map. Leave empty to show the plain address.
+game_map_url  = "https://www.google.com/maps/place/Your+Venue"
 admin_email   = "admin@example.com"

@@ -4,6 +4,7 @@ from moto import mock_aws
 
 from common.email_service import (
     send_admin_cancelled_broadcast,
+    send_admin_unclear_notification,
     send_admin_weekly_prompt,
     send_cancellation,
     send_email,
@@ -96,6 +97,17 @@ def test_send_reminder(mocker):
     assert "4 confirmed" in body
     assert "at least 6" in body
     assert "Hi Bob" in body
+
+
+@pytest.mark.unit
+def test_send_reminder_has_condensed_respond_prompt(mocker):
+    """Reminder targets the haven't-clearly-responded cohort, so it restates
+    in one line how to respond."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_reminder("player@example.com", "Bob", 4, "2026-03-28", 6)
+    body = mock_send.call_args[0][2]
+    assert "Reply" in body
+    assert "Yes" in body and "No" in body and "Maybe" in body
 
 
 @pytest.mark.unit
@@ -265,6 +277,58 @@ def test_unsubscribe_footer_in_tentative_announcement(mocker):
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
 
 
+_ISSUES_URL = "https://github.com/mmithileash/basketball-game-scheduler/issues"
+
+
+@pytest.mark.unit
+def test_text_to_html_linkifies_https_url():
+    """Bare https URLs become clickable anchors in the HTML part."""
+    from common.email_service import _text_to_html
+    out = _text_to_html(f"Report it at {_ISSUES_URL}")
+    assert f'<a href="{_ISSUES_URL}">{_ISSUES_URL}</a>' in out
+
+
+@pytest.mark.unit
+def test_text_to_html_https_link_excludes_trailing_punctuation():
+    """A URL ending a sentence keeps the trailing period outside the anchor."""
+    from common.email_service import _text_to_html
+    out = _text_to_html("Visit https://example.com/path. Thanks!")
+    assert '<a href="https://example.com/path">https://example.com/path</a>.' in out
+
+
+@pytest.mark.unit
+def test_text_to_html_still_linkifies_mailto():
+    """The existing mailto handling is preserved."""
+    from common.email_service import _text_to_html
+    out = _text_to_html("mailto:x@y.com?subject=UNSUBSCRIBE")
+    assert '<a href="mailto:x@y.com?subject=UNSUBSCRIBE">' in out
+
+
+@pytest.mark.unit
+def test_report_issues_link_in_player_footer(mocker):
+    """Player-facing emails invite bug/issue reports via the GitHub repo."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-11", _TIERED_POLICY)
+    body = mock_send.call_args[0][2]
+    assert _ISSUES_URL in body
+
+
+@pytest.mark.unit
+def test_report_issues_link_in_admin_weekly_prompt(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_admin_weekly_prompt("admin@example.com", "2026-07-06")
+    body = mock_send.call_args[0][2]
+    assert _ISSUES_URL in body
+
+
+@pytest.mark.unit
+def test_report_issues_link_in_admin_unclear_notification(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_admin_unclear_notification("admin@example.com", "bob@example.com", "huh??", "2026-07-11")
+    body = mock_send.call_args[0][2]
+    assert _ISSUES_URL in body
+
+
 @pytest.mark.unit
 @mock_aws
 def test_unsubscribe_footer_in_reminder(mocker):
@@ -401,6 +465,43 @@ def test_send_tentative_announcement_tiered_shows_both_branches(mocker):
     assert "Hi Alice" in body
 
 
+def _assert_how_to_respond_block(body: str):
+    """Shared assertions: the announcement teaches email RSVP self-sufficiently."""
+    facts, _, how_to = body.partition("HOW TO RESPOND")
+    assert how_to, "announcement must contain a HOW TO RESPOND section"
+    # Facts zone leads
+    assert "Date:" in facts
+    assert "Location:" in facts
+    # Teaching block
+    assert "Reply" in how_to
+    assert "Yes" in how_to
+    assert "No" in how_to
+    assert "Maybe" in how_to
+    # Change-your-mind reassurance (latest answer wins)
+    assert "latest" in how_to.lower() or "change your mind" in how_to.lower()
+    # Guest format with the email-optional reason
+    assert "guest" in how_to.lower()
+    assert "email" in how_to.lower()
+    # Roster-query line
+    assert "who's playing" in how_to.lower()
+
+
+@pytest.mark.unit
+def test_send_tentative_announcement_tiered_has_how_to_respond_block(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _TIERED_POLICY)
+    _, _, body = mock_send.call_args[0]
+    _assert_how_to_respond_block(body)
+
+
+@pytest.mark.unit
+def test_send_tentative_announcement_fixed_has_how_to_respond_block(mocker):
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _FIXED_POLICY)
+    _, _, body = mock_send.call_args[0]
+    _assert_how_to_respond_block(body)
+
+
 @pytest.mark.unit
 def test_send_tentative_announcement_fixed_shows_single_line(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
@@ -459,3 +560,19 @@ def test_game_marker_in_cancellation_subject(mocker):
     send_cancellation("player@example.com", "2026-07-07", 6)
     _, subject, _ = mock_send.call_args[0]
     assert "[Game: 2026-07-07]" in subject
+
+
+@pytest.mark.unit
+def test_send_admin_unclear_notification_contains_player_and_raw_message(mocker):
+    """Organiser notification surfaces who sent it and the verbatim message."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_admin_unclear_notification(
+        "admin@example.com",
+        "bob@example.com",
+        "yo can i maybe swing by idk lol",
+        "2026-07-07",
+    )
+    to, subject, body = mock_send.call_args[0]
+    assert to == "admin@example.com"
+    assert "bob@example.com" in body
+    assert "yo can i maybe swing by idk lol" in body
