@@ -10,6 +10,7 @@ class Config:
     sender_email: str
     admin_email: str
     game_location: str
+    game_map_url: str
     bedrock_model_id: str
     min_players: int
     long_game_threshold: int
@@ -28,6 +29,7 @@ def load_config() -> Config:
         sender_email=os.environ["SENDER_EMAIL"],
         admin_email=os.environ["ADMIN_EMAIL"],
         game_location=os.environ.get("GAME_LOCATION", "TBD"),
+        game_map_url=os.environ.get("GAME_MAP_URL", ""),
         bedrock_model_id=os.environ.get(
             "BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
         ),

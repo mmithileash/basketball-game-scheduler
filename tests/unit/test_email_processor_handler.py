@@ -87,6 +87,40 @@ def test_handler_join(mocker):
 
 
 @pytest.mark.unit
+def test_handler_join_reply_leads_with_deterministic_status_line(mocker):
+    """The reply BEGINS with a status line built from the committed status,
+    not from the model's free-text reply_draft."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "yeah ok")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-07-07", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={
+            "intent": "JOIN",
+            "guests": [],
+            "confirmed_guest_names": [],
+            "query_target": None,
+            "reply_draft": "Some unrelated model text that must not lead.",
+        },
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Alice")
+    mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    body = mock_send.call_args[0][2]
+    assert body.startswith("✓ You're IN for 2026-07-07")
+
+
+@pytest.mark.unit
 def test_handler_decline(mocker):
     """Mock Bedrock response as DECLINE, verify RSVP updated."""
     _patch_s3(mocker, "bob@example.com", "Re: Basketball Game", "Can't make it")
@@ -127,6 +161,59 @@ def test_handler_decline(mocker):
 
 
 @pytest.mark.unit
+def test_handler_decline_reply_leads_with_not_playing_status_line(mocker):
+    """DECLINE reply begins with the deterministic not-playing line."""
+    _patch_s3(mocker, "bob@example.com", "Re: Basketball Game", "nah")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-07-07", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "DECLINE", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "model text"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Bob")
+    mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch("email_processor.handler.remove_sponsor_guests_from_status", return_value=[])
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    assert mock_send.call_args[0][2].startswith("You're marked as NOT playing for 2026-07-07")
+
+
+@pytest.mark.unit
+def test_handler_maybe_reply_leads_with_maybe_status_line(mocker):
+    """MAYBE reply begins with the deterministic maybe line."""
+    _patch_s3(mocker, "carol@example.com", "Re: Basketball Game", "not sure yet")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-07-07", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={"intent": "MAYBE", "guests": [], "confirmed_guest_names": [], "query_target": None, "reply_draft": "model text"},
+    )
+    mocker.patch("email_processor.handler.get_player_name", return_value="Carol")
+    mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    assert mock_send.call_args[0][2].startswith("You're marked MAYBE for 2026-07-07")
+
+
+@pytest.mark.unit
 def test_handler_query_roster(mocker):
     """Verify no DB update for QUERY_ROSTER, reply sent."""
     _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Who's playing?")
@@ -157,6 +244,57 @@ def test_handler_query_roster(mocker):
     assert result["body"]["intent"] == "QUERY_ROSTER"
     mock_update.assert_not_called()
     mock_send.assert_called_once()
+
+
+@pytest.mark.unit
+def test_handler_unclear_leaves_roster_untouched_and_notifies_admin(mocker):
+    """UNCLEAR: no roster write, player gets a clarification prompt, admin is
+    notified with the sender's address and the verbatim message."""
+    raw_body = "yo can i maybe swing by idk lol"
+    _patch_s3(mocker, "bob@example.com", "Re: Basketball Game", raw_body)
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-07-07", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}},
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={
+            "intent": "UNCLEAR",
+            "guests": [],
+            "confirmed_guest_names": [],
+            "query_target": None,
+            "reply_draft": "I've marked you as maybe.",  # must NOT be trusted
+        },
+    )
+    mock_update = mocker.patch("email_processor.handler.update_player_response")
+    mocker.patch(
+        "email_processor.handler.get_active_admins",
+        return_value=[{"email": "admin@example.com", "name": "Admin"}],
+    )
+    mock_notify = mocker.patch("email_processor.handler.send_admin_unclear_notification")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    result = handler(_make_s3_event(), None)
+
+    assert result["statusCode"] == 200
+    # Roster is never written
+    mock_update.assert_not_called()
+    # Player gets a clarification prompt, not a false confirmation
+    player_call = next(c for c in mock_send.call_args_list if c[0][0] == "bob@example.com")
+    player_body = player_call[0][2]
+    assert "maybe" not in player_body.lower().split("---")[0] or "yes" in player_body.lower()
+    assert "yes" in player_body.lower() and "no" in player_body.lower()
+    # Admin notified with sender + raw message
+    mock_notify.assert_called_once()
+    args = mock_notify.call_args[0]
+    assert "admin@example.com" in args
+    assert "bob@example.com" in args
+    assert raw_body in args
 
 
 @pytest.mark.unit

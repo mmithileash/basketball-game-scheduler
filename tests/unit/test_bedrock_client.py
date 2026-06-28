@@ -107,10 +107,9 @@ def test_parse_error_fallback(mocker, empty_roster):
 
     result = parse_player_email("I'm in!", "player@example.com", empty_roster)
 
-    assert result["intent"] == "MAYBE"
+    assert result["intent"] == "UNCLEAR"
     assert result["guests"] == []
     assert result["confirmed_guest_names"] == []
-    assert "trouble" in result["reply_draft"].lower()
 
 
 @pytest.mark.unit
@@ -124,8 +123,7 @@ def test_parse_json_decode_error_fallback(mocker, empty_roster):
 
     result = parse_player_email("I'm in!", "player@example.com", empty_roster)
 
-    assert result["intent"] == "MAYBE"
-    assert "trouble" in result["reply_draft"].lower()
+    assert result["intent"] == "UNCLEAR"
 
 
 @pytest.mark.unit
@@ -167,6 +165,32 @@ def test_parse_player_email_guest_confirm(mocker, empty_roster):
     assert result["intent"] == "GUEST_CONFIRM"
     assert result["confirmed_guest_names"] == ["John"]
     assert result["guests"] == []
+
+
+@pytest.mark.unit
+def test_parse_unclear_intent_passthrough(mocker, empty_roster):
+    """Model explicitly returns UNCLEAR when it cannot classify → passed through."""
+    mock_client = mocker.MagicMock()
+    mock_client.invoke_model.return_value = _make_bedrock_response("UNCLEAR")
+    mocker.patch("common.bedrock_client._get_bedrock_client", return_value=mock_client)
+
+    result = parse_player_email("asdkjfh ???", "player@example.com", empty_roster)
+
+    assert result["intent"] == "UNCLEAR"
+
+
+@pytest.mark.unit
+def test_parse_missing_intent_defaults_to_unclear(mocker, empty_roster):
+    """A response object with no 'intent' field resolves to UNCLEAR, never MAYBE."""
+    mock_client = mocker.MagicMock()
+    response_body = {"content": [{"text": json.dumps({"reply_draft": "hi"})}]}
+    body_bytes = json.dumps(response_body).encode("utf-8")
+    mock_client.invoke_model.return_value = {"body": io.BytesIO(body_bytes)}
+    mocker.patch("common.bedrock_client._get_bedrock_client", return_value=mock_client)
+
+    result = parse_player_email("???", "player@example.com", empty_roster)
+
+    assert result["intent"] == "UNCLEAR"
 
 
 @pytest.mark.unit

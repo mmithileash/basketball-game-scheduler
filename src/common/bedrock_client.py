@@ -101,7 +101,9 @@ def parse_player_email(
         "- QUERY_PLAYER: Player asks about a specific person\n"
         "- GUEST_CONFIRM: Player previously declined but is confirming some/all of their "
         "guests are still attending (e.g., 'John is still coming')\n"
-        "- GUEST_DECLINE: Player previously declined and their guests are also not coming\n\n"
+        "- GUEST_DECLINE: Player previously declined and their guests are also not coming\n"
+        "- UNCLEAR: The message cannot be confidently classified as any of the above. "
+        "Use this rather than guessing when the player's intent is genuinely ambiguous.\n\n"
         "Respond with ONLY a JSON object (no markdown, no explanation):\n"
         '{{\n'
         '  "intent": "...",\n'
@@ -146,7 +148,7 @@ def parse_player_email(
         )
         # Ensure all expected fields are present with defaults
         parsed: dict[str, Any] = {
-            "intent": result.get("intent", "MAYBE"),
+            "intent": result.get("intent", "UNCLEAR"),
             "guests": result.get("guests", []),
             "confirmed_guest_names": result.get("confirmed_guest_names", []),
             "query_target": result.get("query_target"),
@@ -163,27 +165,25 @@ def parse_player_email(
     except json.JSONDecodeError as e:
         logger.error("Failed to parse Bedrock response as JSON: %s", e)
         return {
-            "intent": "MAYBE",
+            "intent": "UNCLEAR",
             "guests": [],
             "confirmed_guest_names": [],
             "query_target": None,
             "reply_draft": (
                 "Thanks for your reply! I had a little trouble understanding "
-                "your message. I've marked you as 'maybe' for now. "
-                "Please reply again with a clearer response if needed."
+                "your message. Could you reply with Yes, No, or Maybe?"
             ),
         }
     except Exception as e:
         logger.error("Error calling Bedrock: %s", e, exc_info=True)
         return {
-            "intent": "MAYBE",
+            "intent": "UNCLEAR",
             "guests": [],
             "confirmed_guest_names": [],
             "query_target": None,
             "reply_draft": (
                 "Thanks for your reply! I had some trouble processing your "
-                "message. I've marked you as 'maybe' for now. "
-                "Please reply again or contact the organizer directly."
+                "message. Could you reply with Yes, No, or Maybe?"
             ),
         }
 

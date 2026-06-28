@@ -25,6 +25,7 @@ from common.dynamo import (
 )
 from common.email_utils import fetch_email_from_s3
 from common.email_service import (
+    send_admin_unclear_notification,
     send_email,
     send_guest_cancelled_sponsor_notification,
     send_guest_followup,
@@ -70,6 +71,23 @@ def _format_intent_summary(intent: str, guests: list[dict], confirmed_names: lis
         "GUEST_DECLINE": "We've noted that your guests won't be attending.",
     }
     return summaries.get(intent, "We weren't sure what you meant.")
+
+
+def _status_line(intent: str, game_date: str) -> str | None:
+    """Return a deterministic, lead-with status line for status-changing intents.
+
+    Built from the intent actually committed to DynamoDB so it doubles as the
+    safety net that surfaces a misclassification to the player (the email-world
+    replacement for a form's 'submission received' screen). Returns None for
+    intents that don't change the player's roster status.
+    """
+    if intent in ("JOIN", "BRING_GUESTS", "UPDATE_GUESTS"):
+        return f"✓ You're IN for {game_date}"
+    if intent == "MAYBE":
+        return f"You're marked MAYBE for {game_date}"
+    if intent == "DECLINE":
+        return f"You're marked as NOT playing for {game_date}"
+    return None
 
 
 def _format_roster_summary(roster: dict[str, Any]) -> str:
@@ -145,6 +163,10 @@ def _apply_player_intent(
     old_status: str | None,
 ) -> None:
     """Apply the side effects of a player's intent to DynamoDB."""
+    if intent == "UNCLEAR":
+        # Never guess: an unclear message leaves the roster exactly as it was.
+        logger.info("UNCLEAR intent from %s — roster left unchanged", sender_email)
+        return
     if intent == "JOIN":
         player_name = get_player_name(sender_email)
         update_player_response(game_date, sender_email, "YES", name=player_name, old_status=old_status)
@@ -227,6 +249,25 @@ def _handle_guest_email(
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
 
 
+def _handle_unclear_player_email(
+    sender_email: str, subject: str, body: str, game_date: str
+) -> dict[str, Any]:
+    """Handle a message we couldn't confidently classify.
+
+    The roster is left untouched. The player is asked for one clear word, and
+    the organiser is quietly flagged so a human can follow up if needed.
+    """
+    send_email(
+        sender_email,
+        "Re: " + subject,
+        "Thanks for getting back to us! I wasn't sure whether you meant yes, no, "
+        "or maybe — just reply with one of those and I'll lock it in.",
+    )
+    for admin in get_active_admins():
+        send_admin_unclear_notification(admin["email"], sender_email, body, game_date)
+    return {"statusCode": 200, "body": {"sender": sender_email, "intent": "UNCLEAR", "gameDate": game_date}}
+
+
 def _handle_player_email(
     sender_email: str, subject: str, body: str, game_date: str, roster: dict[str, Any]
 ) -> dict[str, Any]:
@@ -237,11 +278,16 @@ def _handle_player_email(
     reply_draft = parsed.get("reply_draft", "Thanks for your reply!")
     logger.info("Intent for %s: %s (old_status: %s)", sender_email, intent, old_status)
 
+    if intent == "UNCLEAR":
+        return _handle_unclear_player_email(sender_email, subject, body, game_date)
+
     _apply_player_intent(game_date, sender_email, intent, parsed, old_status)
 
     intent_summary = _format_intent_summary(intent, parsed.get("guests", []), parsed.get("confirmed_guest_names", []))
     updated_roster = get_roster(game_date)
-    full_reply = f"{reply_draft}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
+    status_line = _status_line(intent, game_date)
+    lead = status_line if status_line else reply_draft
+    full_reply = f"{lead}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
     send_email(sender_email, "Re: " + subject, full_reply)
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
 

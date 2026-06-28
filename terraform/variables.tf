@@ -20,6 +20,12 @@ variable "game_location" {
   default     = "TBD"
 }
 
+variable "game_map_url" {
+  description = "Optional Google Maps (or similar) URL for the game location. When set, the location is rendered as a clickable link with the address as its text; leave empty to show the plain address."
+  type        = string
+  default     = ""
+}
+
 variable "bedrock_model_id" {
   description = "AWS Bedrock inference profile ID for NLU intent parsing. Claude Haiku 4.5 is not available with on-demand throughput and must be invoked via a cross-region inference profile (e.g. 'us.' prefix for US regions, 'eu.' for EU regions)."
   type        = string

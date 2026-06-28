@@ -12,6 +12,7 @@ locals {
     EMAIL_BUCKET        = aws_s3_bucket.email_inbox.id
     SENDER_EMAIL        = var.sender_email
     GAME_LOCATION       = var.game_location
+    GAME_MAP_URL        = var.game_map_url
     BEDROCK_MODEL_ID    = var.bedrock_model_id
     MIN_PLAYERS         = tostring(var.min_players)
     LONG_GAME_THRESHOLD = tostring(var.long_game_threshold)

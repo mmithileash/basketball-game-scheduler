@@ -1,6 +1,7 @@
 import html
 import logging
 import re
+from datetime import date
 from typing import Any
 
 import boto3
@@ -11,6 +12,13 @@ logger = logging.getLogger(__name__)
 
 _config = None
 _ses_client = None
+
+_REPO_ISSUES_URL = "https://github.com/mmithileash/basketball-game-scheduler/issues"
+
+
+def _report_issues_line() -> str:
+    """A one-line invitation to report bugs/issues on the GitHub repo."""
+    return f"Found a bug or have a suggestion? Report it at {_REPO_ISSUES_URL}"
 
 
 def _get_config():
@@ -34,16 +42,112 @@ def _unsubscribe_footer() -> str:
         f"\n\n---\n"
         f"To unsubscribe from future game emails, click the link below "
         f"(this will open your email client with a pre-filled message):\n"
-        f"mailto:{config.sender_email}?subject=UNSUBSCRIBE\n"
+        f"mailto:{config.sender_email}?subject=UNSUBSCRIBE\n\n"
+        f"{_report_issues_line()}\n"
     )
 
 
+# Palette for the HTML rendering of emails. The plain-text body remains the
+# single source of truth; these only colour/scale structure detected within it.
+_ACCENT = "#e8702a"  # basketball orange — section headings + the 🏀 headline
+_RSVP_COLORS = {
+    "YES": "#1a7f37",  # green
+    "NO": "#c0392b",  # red
+    "MAYBE": "#b7791f",  # amber
+}
+
+# A divider is a line of box-drawing rules ("────") or three-or-more hyphens
+# ("---", used in footers). A heading is a line that is *entirely* uppercase
+# letters/spaces (e.g. "THE GAME", "HOW TO RESPOND"). An RSVP line leads with a
+# YES/NO/MAYBE token. These are deliberately narrow so ordinary prose is never
+# restyled.
+_DIVIDER_LINE_RE = re.compile(r"\s*(?:─+|-{3,})\s*")
+_HEADING_LINE_RE = re.compile(r"[A-Z][A-Z &'/]*")
+_RSVP_LINE_RE = re.compile(r"^(\s*)(YES|NO|MAYBE)(\b.*)$")
+
+
+def _style_line(line: str) -> str:
+    """Style a single already-HTML-escaped body line.
+
+    Returns an <hr> sentinel for divider lines, or the line wrapped in an accent
+    span for the 🏀 headline / uppercase section headers, or the line with its
+    leading RSVP token colour-coded — otherwise the line unchanged.
+    """
+    if _DIVIDER_LINE_RE.fullmatch(line):
+        return '<hr style="border:0;border-top:1px solid #e5e7eb;margin:18px 0;">'
+    if "🏀" in line:
+        return (
+            f'<span style="font-size:18px;font-weight:700;color:{_ACCENT};">'
+            f"{line}</span>"
+        )
+    if _HEADING_LINE_RE.fullmatch(line.strip()):
+        return (
+            f'<span style="font-weight:700;color:{_ACCENT};letter-spacing:0.5px;">'
+            f"{line}</span>"
+        )
+    m = _RSVP_LINE_RE.match(line)
+    if m:
+        color = _RSVP_COLORS[m.group(2)]
+        return (
+            f"{m.group(1)}"
+            f'<span style="color:{color};font-weight:700;">{m.group(2)}</span>'
+            f"{m.group(3)}"
+        )
+    return line
+
+
 def _text_to_html(text: str) -> str:
-    """Convert a plain-text email body to basic HTML, making mailto: links clickable."""
+    """Render a plain-text email body as styled HTML, preserving the body's own
+    typography and making mailto: links clickable.
+
+    The bodies are authored as plain text whose structure is carried by line
+    breaks, blank lines, indentation and aligned labels. HTML normally collapses
+    runs of spaces and blank lines, which would destroy that layout, so we render
+    inside a `white-space: pre-wrap` card: every space and newline the author
+    wrote is honoured, while long lines still soft-wrap on small screens. Because
+    pre-wrap already turns "\n" into a line break, we must NOT also insert <br>.
+
+    On top of that layout we layer light, attention-guiding styling via
+    `_style_line`: box-drawing dividers become real <hr> rules (literal "─" runs
+    were wider than the card and wrapped in Gmail — the original bug), the 🏀
+    headline and uppercase section headers take the accent colour, and leading
+    YES/NO/MAYBE tokens are colour-coded.
+    """
     escaped = html.escape(text)
+    # Markdown-style links `[text](url)` become anchors whose visible text is the
+    # label (used e.g. to show the venue address linked to a map). Run this first
+    # so the bare-URL pass below never sees the URL hiding inside the parentheses.
+    escaped = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        r'<a href="\2">\1</a>',
+        escaped,
+    )
     escaped = re.sub(r"(mailto:[^\s]+)", r'<a href="\1">Unsubscribe</a>', escaped)
-    escaped = escaped.replace("\n", "<br>\n")
-    return f"<html><body>{escaped}</body></html>"
+    # Linkify bare http(s) URLs, leaving any trailing sentence punctuation outside
+    # the anchor (so "see https://x.com/p." doesn't swallow the period). The
+    # [^\s<"] bound and the (?<!") guard keep us from re-linking a URL already
+    # sitting inside an anchor's href="..." (e.g. from the markdown pass above).
+    escaped = re.sub(
+        r'(?<!")(https?://[^\s<"]+?)([.,;:!?)\]]*)(?=\s|$)',
+        r'<a href="\1">\1</a>\2',
+        escaped,
+    )
+
+    styled = "\n".join(_style_line(line) for line in escaped.split("\n"))
+    # Each <hr> is a block element carrying its own vertical margin; strip the
+    # newlines hugging it so pre-wrap doesn't stack extra blank lines around it.
+    styled = re.sub(r"\n*(<hr[^>]*>)\n*", r"\1", styled)
+
+    return (
+        '<html><body style="margin:0;padding:0;background-color:#f4f5f7;">'
+        '<div style="max-width:600px;margin:24px auto;padding:28px;'
+        "background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
+        'font-size:15px;line-height:1.55;color:#1a1a1a;'
+        'white-space:pre-wrap;word-wrap:break-word;">'
+        f"{styled}"
+        "</div></body></html>"
+    )
 
 
 def send_email(to: str, subject: str, body: str) -> None:
@@ -78,11 +182,11 @@ def send_reminder(
     subject = f"Reminder: Basketball Game - {game_date} [Game: {game_date}]"
     body = (
         f"{greeting},\n\n"
-        f"This is a reminder about the basketball game on {game_date}.\n\n"
-        f"We currently have {confirmed_count} confirmed player(s) "
+        f"🏀  Reminder: basketball game on {_pretty_date(game_date)}.\n\n"
+        f"  We currently have {confirmed_count} confirmed player(s) "
         f"(need at least {min_players}).\n\n"
-        f"If you haven't responded yet, please reply to let us know "
-        f"if you can make it.\n"
+        f"  Haven't responded yet?\n"
+        f"  Just hit Reply with Yes / No / Maybe.\n"
     )
 
     send_email(player_email, subject, body + _unsubscribe_footer())
@@ -164,6 +268,35 @@ def send_guest_cancelled_sponsor_notification(
     send_email(sponsor_email, subject, body + _unsubscribe_footer())
 
 
+def send_admin_unclear_notification(
+    admin_email: str,
+    player_email: str,
+    raw_message: str,
+    game_date: str,
+) -> None:
+    """Flag to the organiser that a player's message couldn't be understood.
+
+    The system has already asked the player to clarify; this is a heads-up so a
+    human can step in if the player goes silent. No reply is requested — the
+    admin acts by emailing the player directly.
+    """
+    subject = f"Couldn't understand a reply for {game_date}"
+    body = (
+        f"Hi,\n\n"
+        f"We couldn't confidently interpret a reply about the game on "
+        f"{_pretty_date(game_date)}, so the player's roster status was left "
+        f"unchanged and they were asked to clarify with Yes / No / Maybe.\n\n"
+        f"  From:  {player_email}\n\n"
+        f"{_DIVIDER}\n"
+        f"{raw_message}\n"
+        f"{_DIVIDER}\n\n"
+        f"If they go quiet, you may want to follow up with them directly.\n\n"
+        f"---\n"
+        f"{_report_issues_line()}\n"
+    )
+    send_email(admin_email, subject, body)
+
+
 def send_admin_weekly_prompt(admin_email: str, week_start_date: str) -> None:
     """Ask the admin whether to schedule games for the upcoming week."""
     subject = f"Schedule games for week of {week_start_date}?"
@@ -174,7 +307,9 @@ def send_admin_weekly_prompt(admin_email: str, week_start_date: str) -> None:
         f"(e.g. 'Tuesday and Saturday' or 'Thursday 7PM'). "
         f"If no time is given, the default is 11:00 AM UTC.\n\n"
         f"To skip this week, reply 'No games this week'.\n\n"
-        f"Please reply by Tuesday 9PM UTC.\n"
+        f"Please reply by Tuesday 9PM UTC.\n\n"
+        f"---\n"
+        f"{_report_issues_line()}\n"
     )
     send_email(admin_email, subject, body)
 
@@ -204,6 +339,33 @@ def _duration_label(hours: int) -> str:
     return f"{hours} hour{'s' if hours > 1 else ''}"
 
 
+def _location_display() -> str:
+    """The venue line for email bodies.
+
+    When a map URL is configured this returns markdown `[address](url)`, which
+    `_text_to_html` renders as an anchor whose visible text is the address; with
+    no map URL it falls back to the bare address (unchanged from before).
+    """
+    config = _get_config()
+    if config.game_map_url:
+        return f"[{config.game_location}]({config.game_map_url})"
+    return config.game_location
+
+
+_DIVIDER = "─" * 44
+
+
+def _pretty_date(game_date: str) -> str:
+    """Render an ISO date as e.g. 'Saturday, 07 July 2026' for human readers.
+
+    Falls back to the raw string if it isn't a parseable ISO date.
+    """
+    try:
+        return date.fromisoformat(game_date).strftime("%A, %d %B %Y")
+    except ValueError:
+        return game_date
+
+
 def send_tentative_announcement(
     player_email: str,
     player_name: str | None,
@@ -226,30 +388,43 @@ def send_tentative_announcement(
 
     if is_fixed(policy):
         timing = (
-            f"Time: {long_game['startTime']}\n"
-            f"Duration: {_duration_label(int(long_game['durationHours']))}\n"
+            f"  Time:      {long_game['startTime']}\n"
+            f"  Duration:  {_duration_label(int(long_game['durationHours']))}\n"
         )
     else:
         timing = (
-            f"The start time and duration depend on how many of us sign up:\n"
-            f"  - If {policy['threshold']}+ players confirm: "
-            f"{long_game['startTime']} for {_duration_label(int(long_game['durationHours']))}\n"
-            f"  - Otherwise: "
-            f"{short_game['startTime']} for {_duration_label(int(short_game['durationHours']))}\n"
+            f"  Time:     Depends on how many of us sign up —\n"
+            f"               {policy['threshold']}+ players: {long_game['startTime']} "
+            f"for {_duration_label(int(long_game['durationHours']))}\n"
+            f"               otherwise:   {short_game['startTime']} "
+            f"for {_duration_label(int(short_game['durationHours']))}\n"
         )
 
     body = (
         f"{greeting},\n\n"
-        f"A basketball game has been scheduled!\n\n"
-        f"Date: {game_date}\n"
+        f"🏀  A basketball game has been scheduled!\n\n"
+        f"{_DIVIDER}\n"
+        f"THE GAME\n"
+        f"{_DIVIDER}\n"
+        f"  Date:      {_pretty_date(game_date)}\n"
         f"{timing}"
-        f"Location: {config.game_location}\n\n"
-        f"Please reply to let us know if you can make it:\n"
-        f"  - \"I'm in\" or \"Yes\" to join\n"
-        f"  - \"Can't make it\" or \"No\" to decline\n"
-        f"  - \"Maybe\" if you're unsure\n"
-        f"  - \"I'm bringing 2 guests: John, Jane\" to bring guests\n\n"
-        f"We need at least {policy['minPlayers']} players to play.\n"
+        f"  Location:  {_location_display()}\n\n"
+        f"  We need at least {policy['minPlayers']} players to play.\n\n"
+        f"{_DIVIDER}\n"
+        f"HOW TO RESPOND\n"
+        f"{_DIVIDER}\n"
+        f"  Just hit Reply to this email — we'll know which game you mean.\n\n"
+        f"     YES     \"Yes\" or \"I'm in\"\n"
+        f"     NO      \"No\" or \"Can't make it\"\n"
+        f"     MAYBE   \"Maybe\" if you're not sure yet\n\n"
+        f"  Changed your mind?\n"
+        f"     Reply again any time before the cutoff — your latest answer wins.\n\n"
+        f"  Bringing guests?\n"
+        f"     List their names, e.g. \"I'm in, bringing John and Jane\".\n"
+        f"     Add an email if you'd like them to get their own confirmation\n"
+        f"     and be able to RSVP directly.\n\n"
+        f"  Curious who's coming?\n"
+        f"     Reply \"who's playing?\" to see the current roster.\n"
     )
     send_email(player_email, subject, body + _unsubscribe_footer())
 
@@ -280,7 +455,7 @@ def send_final_confirmation_with_duration(
         f"The basketball game is ON for {game_date}!\n\n"
         f"Time: {start_time}\n"
         f"Duration: {_duration_label(duration_hours)}\n"
-        f"Location: {config.game_location}\n\n"
+        f"Location: {_location_display()}\n\n"
         f"Confirmed players:\n{roster_text}\n\n"
         f"See you there!\n"
     )
