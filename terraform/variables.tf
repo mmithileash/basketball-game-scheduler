@@ -84,3 +84,37 @@ variable "admin_email" {
   description = "Email address for admin commands (e.g. admin@hoops.example.com)"
   type        = string
 }
+
+# -----------------------------------------------------------------------------
+# Monitoring & alerting
+# -----------------------------------------------------------------------------
+
+variable "alert_email" {
+  description = "Email address that receives cost, error, and usage alerts. Leave empty to fall back to admin_email."
+  type        = string
+  default     = ""
+}
+
+variable "monthly_budget_limit_usd" {
+  description = "Monthly AWS cost budget in USD. Budget notifications fire at 80% / 100% of actual spend and at 100% of forecast spend."
+  type        = number
+  default     = 50
+}
+
+variable "lambda_duration_alarm_threshold_ms" {
+  description = "Lambda duration (p99, ms) above which a usage alarm fires. Functions have a 60s (60000ms) timeout, so the default warns well before timeouts begin."
+  type        = number
+  default     = 45000
+}
+
+variable "ses_bounce_rate_threshold" {
+  description = "SES account bounce rate (0-1) above which an alarm fires. AWS may pause sending above 0.05."
+  type        = number
+  default     = 0.05
+}
+
+variable "ses_complaint_rate_threshold" {
+  description = "SES account complaint rate (0-1) above which an alarm fires. AWS may pause sending above 0.001."
+  type        = number
+  default     = 0.001
+}
