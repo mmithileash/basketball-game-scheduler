@@ -38,6 +38,8 @@ See [docs/architecture.md](docs/architecture.md) for detailed flow descriptions,
 │   │   ├── date_utils.py            # Week/SFN-timestamp helpers
 │   │   ├── dynamo.py                 # DynamoDB operations
 │   │   ├── email_service.py         # SES email sending
+│   │   ├── email_utils.py           # Inbound email parsing/quote stripping
+│   │   ├── policy.py                 # Per-game timing policy helpers
 │   │   └── bedrock_client.py        # Bedrock NLU intent parsing
 │   ├── weekly_scheduler/            # Monday admin-prompt Lambda
 │   ├── weekly_cutoff_checker/       # Tuesday no-response fallback Lambda
@@ -53,8 +55,7 @@ See [docs/architecture.md](docs/architecture.md) for detailed flow descriptions,
 │   ├── unit/                        # Unit tests (moto mocks)
 │   └── integration/                 # Integration tests (LocalStack + Docker)
 ├── scripts/
-│   ├── import_players.py            # CSV player import script
-│   └── sample_players.csv           # Example player list
+│   └── import_players.py            # CSV player import script
 ├── docs/
 │   └── architecture.md              # Detailed architecture documentation
 ├── docker-compose.yml                # LocalStack for integration tests
@@ -115,6 +116,7 @@ domain_name    = "yourdomain.com"
 sender_email   = "scheduler@yourdomain.com"
 admin_email    = "admin@yourdomain.com"
 game_location  = "Community Center Court"
+game_map_url   = "https://www.google.com/maps/place/Your+Venue"
 ```
 
 ### 4. Import players
@@ -149,7 +151,8 @@ After `terraform apply`, update your domain registrar's nameservers to the ones 
 | `sender_email` | From address for outgoing emails | *(required)* |
 | `admin_email` | Admin command inbox (`admin@<domain>`) | *(required)* |
 | `game_location` | Game location shown in announcements | `TBD` |
-| `bedrock_model_id` | Bedrock model for NLU | `anthropic.claude-3-haiku-20240307-v1:0` |
+| `game_map_url` | Optional map link shown in announcements | `""` |
+| `bedrock_model_id` | Bedrock inference profile for NLU | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 | `min_players` | Minimum confirmed players for a game to proceed | `6` |
 | `long_game_threshold` | Confirmed count at/above which the long-game tier applies (otherwise the short-game tier) | `10` |
 | `long_game_start_time` | Start time for the long-game tier | `10:00 AM` |
