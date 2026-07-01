@@ -33,6 +33,11 @@ def strip_pk(pk_value: str) -> str:
     return pk_value.split("#", 1)[1]
 
 
+def _now() -> str:
+    """Current UTC time as an ISO 8601 string, used for createdAt/modifiedAt stamps."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 _config = None
 _dynamodb = None
 _client = None
@@ -115,7 +120,7 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
     """
     config = _get_config()
     client = _get_client()
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now()
     week_start = week_start_for_date(date.fromisoformat(game_date)).isoformat()
 
     if policy is None:
@@ -123,6 +128,7 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
         policy = default_policy(config)
 
     pk = game_pk(game_date)
+    ts = {"createdAt": {"S": now}, "modifiedAt": {"S": now}}
     client.transact_write_items(TransactItems=[
         {
             "Put": {
@@ -131,8 +137,8 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
                     "pk": {"S": pk},
                     "sk": {"S": "gameStatus"},
                     "status": {"S": "OPEN"},
-                    "createdAt": {"S": now},
                     "policy": _to_ddb_attr(policy),
+                    **ts,
                 },
             }
         },
@@ -144,6 +150,7 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
                     "sk": {"S": "playerStatus#YES"},
                     "players": {"M": {}},
                     "guests": {"L": []},
+                    **ts,
                 },
             }
         },
@@ -155,6 +162,7 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
                     "sk": {"S": "playerStatus#NO"},
                     "players": {"M": {}},
                     "guests": {"L": []},
+                    **ts,
                 },
             }
         },
@@ -166,6 +174,7 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
                     "sk": {"S": "playerStatus#MAYBE"},
                     "players": {"M": {}},
                     "guests": {"L": []},
+                    **ts,
                 },
             }
         },
@@ -175,12 +184,15 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
                 "Key": {"pk": {"S": week_pk(week_start)}, "sk": {"S": "weekStatus"}},
                 "UpdateExpression": (
                     "SET gameCount = if_not_exists(gameCount, :zero) + :one, "
-                    "adminResponded = :true"
+                    "adminResponded = :true, "
+                    "createdAt = if_not_exists(createdAt, :now), "
+                    "modifiedAt = :now"
                 ),
                 "ExpressionAttributeValues": {
                     ":zero": {"N": "0"},
                     ":one": {"N": "1"},
                     ":true": {"BOOL": True},
+                    ":now": {"S": now},
                 },
             }
         },
@@ -258,6 +270,7 @@ def update_player_response(
     """
     config = _get_config()
     client = _get_client()
+    now = _now()
 
     player_value = {"M": {"name": {"S": name or ""}}}
     new_sk = f"playerStatus#{new_status}"
@@ -273,8 +286,9 @@ def update_player_response(
                             "pk": {"S": game_pk(game_date)},
                             "sk": {"S": old_sk},
                         },
-                        "UpdateExpression": "REMOVE players.#email",
+                        "UpdateExpression": "REMOVE players.#email SET modifiedAt = :now",
                         "ExpressionAttributeNames": {"#email": email},
+                        "ExpressionAttributeValues": {":now": {"S": now}},
                     }
                 },
                 {
@@ -284,9 +298,9 @@ def update_player_response(
                             "pk": {"S": game_pk(game_date)},
                             "sk": {"S": new_sk},
                         },
-                        "UpdateExpression": "SET players.#email = :val",
+                        "UpdateExpression": "SET players.#email = :val, modifiedAt = :now",
                         "ExpressionAttributeNames": {"#email": email},
-                        "ExpressionAttributeValues": {":val": player_value},
+                        "ExpressionAttributeValues": {":val": player_value, ":now": {"S": now}},
                     }
                 },
             ]
@@ -299,9 +313,9 @@ def update_player_response(
                 "pk": {"S": game_pk(game_date)},
                 "sk": {"S": new_sk},
             },
-            UpdateExpression="SET players.#email = :val",
+            UpdateExpression="SET players.#email = :val, modifiedAt = :now",
             ExpressionAttributeNames={"#email": email},
-            ExpressionAttributeValues={":val": player_value},
+            ExpressionAttributeValues={":val": player_value, ":now": {"S": now}},
         )
         logger.info(f"Set {email} to {new_status} for game {game_date}")
 
@@ -313,9 +327,9 @@ def update_game_status(game_date: str, status: str) -> None:
 
     table.update_item(
         Key={"pk": game_pk(game_date), "sk": "gameStatus"},
-        UpdateExpression="SET #status = :val",
+        UpdateExpression="SET #status = :val, modifiedAt = :now",
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":val": status},
+        ExpressionAttributeValues={":val": status, ":now": _now()},
     )
     logger.info("Updated game %s status to %s", game_date, status)
 
@@ -331,8 +345,10 @@ def freeze_game_schedule(game_date: str, start_time: str, duration_hours: int) -
 
     table.update_item(
         Key={"pk": game_pk(game_date), "sk": "gameStatus"},
-        UpdateExpression="SET confirmedStartTime = :st, confirmedDurationHours = :dur",
-        ExpressionAttributeValues={":st": start_time, ":dur": duration_hours},
+        UpdateExpression=(
+            "SET confirmedStartTime = :st, confirmedDurationHours = :dur, modifiedAt = :now"
+        ),
+        ExpressionAttributeValues={":st": start_time, ":dur": duration_hours, ":now": _now()},
     )
     logger.info("Froze schedule for %s: %s, %dh", game_date, start_time, duration_hours)
 
@@ -396,12 +412,15 @@ def create_guest_entry(
         pk = sponsor_email
         sk = f"guest#active#{guest_name}"
 
+    now = _now()
     table.put_item(Item={
         "email": pk,
         "active": sk,
         "name": guest_name,
         "sponsorEmail": sponsor_email,
         "gameDate": game_date,
+        "createdAt": now,
+        "modifiedAt": now,
     })
 
     guest_obj = {
@@ -442,11 +461,15 @@ def add_guests_to_game_status(
     client.update_item(
         TableName=config.games_table,
         Key={"pk": {"S": game_pk(game_date)}, "sk": {"S": f"playerStatus#{status}"}},
-        UpdateExpression="SET #guests = list_append(if_not_exists(#guests, :empty), :new)",
+        UpdateExpression=(
+            "SET #guests = list_append(if_not_exists(#guests, :empty), :new), "
+            "modifiedAt = :now"
+        ),
         ExpressionAttributeNames={"#guests": "guests"},
         ExpressionAttributeValues={
             ":new": {"L": guest_list},
             ":empty": {"L": []},
+            ":now": {"S": _now()},
         },
     )
     logger.info(f"Added {len(guests)} guest(s) to playerStatus#{status} for {game_date}")
@@ -480,9 +503,9 @@ def remove_sponsor_guests_from_status(
     client.update_item(
         TableName=config.games_table,
         Key={"pk": {"S": game_pk(game_date)}, "sk": {"S": f"playerStatus#{status}"}},
-        UpdateExpression="SET #guests = :remaining",
+        UpdateExpression="SET #guests = :remaining, modifiedAt = :now",
         ExpressionAttributeNames={"#guests": "guests"},
-        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
+        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}, ":now": {"S": _now()}},
     )
     logger.info(
         f"Removed {len(sponsor_guests)} guest(s) for {sponsor_email} "
@@ -525,25 +548,30 @@ def move_confirmed_guests(
     remaining_ddb = [_guest_to_ddb(g) for g in remaining_no]
     to_move_ddb = [_guest_to_ddb(g) for g in to_move]
 
+    now = _now()
     client.transact_write_items(TransactItems=[
         {
             "Update": {
                 "TableName": config.games_table,
                 "Key": {"pk": {"S": game_pk(game_date)}, "sk": {"S": "playerStatus#NO"}},
-                "UpdateExpression": "SET #guests = :remaining",
+                "UpdateExpression": "SET #guests = :remaining, modifiedAt = :now",
                 "ExpressionAttributeNames": {"#guests": "guests"},
-                "ExpressionAttributeValues": {":remaining": {"L": remaining_ddb}},
+                "ExpressionAttributeValues": {":remaining": {"L": remaining_ddb}, ":now": {"S": now}},
             }
         },
         {
             "Update": {
                 "TableName": config.games_table,
                 "Key": {"pk": {"S": game_pk(game_date)}, "sk": {"S": "playerStatus#YES"}},
-                "UpdateExpression": "SET #guests = list_append(if_not_exists(#guests, :empty), :moving)",
+                "UpdateExpression": (
+                    "SET #guests = list_append(if_not_exists(#guests, :empty), :moving), "
+                    "modifiedAt = :now"
+                ),
                 "ExpressionAttributeNames": {"#guests": "guests"},
                 "ExpressionAttributeValues": {
                     ":moving": {"L": to_move_ddb},
                     ":empty": {"L": []},
+                    ":now": {"S": now},
                 },
             }
         },
@@ -556,12 +584,15 @@ def add_player(email: str, name: str, is_admin: bool = False) -> None:
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
+    now = _now()
     table.put_item(
         Item={
             "email": email,
             "active": "true",
             "name": name,
             "isAdmin": is_admin,
+            "createdAt": now,
+            "modifiedAt": now,
         },
         ConditionExpression="attribute_not_exists(email)",
     )
@@ -610,8 +641,11 @@ def deactivate_player(email: str) -> None:
     if not item:
         raise ValueError(f"No active player found for {email}")
 
+    now = _now()
     inactive_item = {k: v for k, v in item.items()}
     inactive_item["active"] = "false"
+    inactive_item.setdefault("createdAt", now)
+    inactive_item["modifiedAt"] = now
 
     client.transact_write_items(TransactItems=[
         {
@@ -644,8 +678,11 @@ def reactivate_player(email: str) -> None:
     if not item:
         raise ValueError(f"No inactive player found for {email}")
 
+    now = _now()
     active_item = {k: v for k, v in item.items()}
     active_item["active"] = "true"
+    active_item.setdefault("createdAt", now)
+    active_item["modifiedAt"] = now
 
     client.transact_write_items(TransactItems=[
         {
@@ -684,11 +721,16 @@ def increment_rate_limit_count(email: str, week_start: str) -> int:
     week_start_dt = datetime.fromisoformat(week_start).replace(tzinfo=timezone.utc)
     expires_at = int((week_start_dt + timedelta(days=8)).timestamp())
 
+    now = _now()
     response = table.update_item(
         Key={"email": email, "active": f"ratelimit#{week_start}"},
-        UpdateExpression="SET expiresAt = if_not_exists(expiresAt, :exp) ADD #count :one",
+        UpdateExpression=(
+            "SET expiresAt = if_not_exists(expiresAt, :exp), "
+            "createdAt = if_not_exists(createdAt, :now), modifiedAt = :now "
+            "ADD #count :one"
+        ),
         ExpressionAttributeNames={"#count": "count"},
-        ExpressionAttributeValues={":one": 1, ":exp": expires_at},
+        ExpressionAttributeValues={":one": 1, ":exp": expires_at, ":now": now},
         ReturnValues="UPDATED_NEW",
     )
     new_count = int(response["Attributes"]["count"])
@@ -738,9 +780,9 @@ def remove_guest_from_status(game_date: str, status: str, guest_pk: str) -> dict
     client.update_item(
         TableName=config.games_table,
         Key={"pk": {"S": game_pk(game_date)}, "sk": {"S": f"playerStatus#{status}"}},
-        UpdateExpression="SET #guests = :remaining",
+        UpdateExpression="SET #guests = :remaining, modifiedAt = :now",
         ExpressionAttributeNames={"#guests": "guests"},
-        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}},
+        ExpressionAttributeValues={":remaining": {"L": remaining_ddb}, ":now": {"S": _now()}},
     )
     logger.info(f"Removed guest pk={guest_pk} from playerStatus#{status} for {game_date}")
     return target
@@ -763,9 +805,12 @@ def set_week_no_game(week_start_date: str, reason: str) -> None:
     table = _get_resource().Table(config.games_table)
     table.update_item(
         Key={"pk": week_pk(week_start_date), "sk": "weekStatus"},
-        UpdateExpression="SET adminResponded = :true, #reason = :reason",
+        UpdateExpression=(
+            "SET adminResponded = :true, #reason = :reason, "
+            "createdAt = if_not_exists(createdAt, :now), modifiedAt = :now"
+        ),
         ExpressionAttributeNames={"#reason": "reason"},
-        ExpressionAttributeValues={":true": True, ":reason": reason},
+        ExpressionAttributeValues={":true": True, ":reason": reason, ":now": _now()},
     )
     logger.info(f"Week {week_start_date} marked no-game: {reason}")
 
@@ -803,12 +848,13 @@ def pre_cancel_game(game_date: str) -> None:
     """
     config = _get_config()
     table = _get_resource().Table(config.games_table)
-    now = datetime.now(timezone.utc).isoformat()
+    now = _now()
 
     table.put_item(Item={
         "pk": game_pk(game_date),
         "sk": "gameStatus",
         "status": "CANCELLED",
         "createdAt": now,
+        "modifiedAt": now,
     })
     logger.info(f"Pre-cancelled game for {game_date}")

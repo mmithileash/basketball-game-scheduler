@@ -5,6 +5,8 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from common.date_utils import week_start_for_date
+
 from common.dynamo import (
     add_guests_to_game_status,
     add_player,
@@ -162,6 +164,42 @@ def test_create_game(sample_game_date):
 
 @pytest.mark.unit
 @mock_aws
+def test_create_game_stamps_created_and_modified_on_every_item(sample_game_date):
+    """Every game item (status + all playerStatus rows) carries createdAt == modifiedAt."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    create_game(sample_game_date)
+
+    table = dynamodb.Table("test-games")
+    items = table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("pk").eq(game_pk(sample_game_date))
+    )["Items"]
+
+    assert len(items) == 4
+    for item in items:
+        assert item["createdAt"], f"{item['sk']} missing createdAt"
+        assert item["modifiedAt"], f"{item['sk']} missing modifiedAt"
+        assert item["createdAt"] == item["modifiedAt"]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stamps_week_status_row(sample_game_date):
+    """The weekStatus upsert row also carries createdAt and modifiedAt."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    create_game(sample_game_date)
+
+    week_start = week_start_for_date(date.fromisoformat(sample_game_date)).isoformat()
+    item = get_week_status(week_start)
+    assert item["createdAt"]
+    assert item["modifiedAt"]
+
+
+@pytest.mark.unit
+@mock_aws
 def test_create_game_stores_explicit_policy(sample_game_date):
     """A policy passed to create_game is stored on the gameStatus item."""
     _reset_dynamo_caches()
@@ -279,6 +317,47 @@ def test_update_player_response_new(sample_game_date):
     assert "alice@example.com" not in roster["MAYBE"]["players"]
 
 
+def _game_item(dynamodb, game_date, sk):
+    """Read a raw Games-table item for assertions."""
+    return dynamodb.Table("test-games").get_item(
+        Key={"pk": game_pk(game_date), "sk": sk}
+    )["Item"]
+
+
+@pytest.mark.unit
+@mock_aws
+def test_update_player_response_bumps_modified_at(sample_game_date):
+    """Setting a response bumps the target item's modifiedAt but preserves createdAt."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    with patch("common.dynamo._now", side_effect=["T0", "T1"]):
+        create_game(sample_game_date)
+        update_player_response(sample_game_date, "alice@example.com", "YES", name="Alice")
+
+    yes = _game_item(dynamodb, sample_game_date, "playerStatus#YES")
+    assert yes["createdAt"] == "T0"
+    assert yes["modifiedAt"] == "T1"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_update_player_response_move_bumps_both_items(sample_game_date):
+    """Moving a player between statuses bumps modifiedAt on both playerStatus items."""
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    with patch("common.dynamo._now", side_effect=["T0", "T1", "T2"]):
+        create_game(sample_game_date)
+        update_player_response(sample_game_date, "alice@example.com", "YES", name="Alice")
+        update_player_response(
+            sample_game_date, "alice@example.com", "NO", name="Alice", old_status="YES"
+        )
+
+    assert _game_item(dynamodb, sample_game_date, "playerStatus#YES")["modifiedAt"] == "T2"
+    assert _game_item(dynamodb, sample_game_date, "playerStatus#NO")["modifiedAt"] == "T2"
+
+
 @pytest.mark.unit
 @mock_aws
 def test_update_player_response_change(sample_game_date):
@@ -385,6 +464,7 @@ def test_create_guest_entry_with_contact_email(sample_game_date):
     assert item["name"] == "John"
     assert item["sponsorEmail"] == "alice@example.com"
     assert item["gameDate"] == sample_game_date
+    assert item["createdAt"] == item["modifiedAt"]
 
 
 @pytest.mark.unit
@@ -546,6 +626,7 @@ def test_add_player_creates_active_record():
     item = table.get_item(Key={"email": "alice@example.com", "active": "true"})["Item"]
     assert item["name"] == "Alice"
     assert item["isAdmin"] == False
+    assert item["createdAt"] == item["modifiedAt"]
 
 
 @pytest.mark.unit
@@ -750,6 +831,7 @@ def test_pre_cancel_game_creates_cancelled_record():
     item = table.get_item(Key={"pk": game_pk("2026-04-11"), "sk": "gameStatus"})["Item"]
     assert item["status"] == "CANCELLED"
     assert "createdAt" in item
+    assert item["modifiedAt"] == item["createdAt"]
 
 
 @pytest.mark.unit
@@ -975,3 +1057,154 @@ def test_get_open_games_returns_empty_when_none():
     _reset_dynamo_caches()
 
     assert get_open_games() == []
+
+
+# ---------------------------------------------------------------------------
+# modifiedAt bump coverage for the remaining mutation paths
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@mock_aws
+def test_update_game_status_bumps_modified_at(sample_game_date):
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    with patch("common.dynamo._now", side_effect=["T0", "T1"]):
+        create_game(sample_game_date)
+        update_game_status(sample_game_date, "CANCELLED")
+
+    item = _game_item(dynamodb, sample_game_date, "gameStatus")
+    assert item["createdAt"] == "T0"
+    assert item["modifiedAt"] == "T1"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_freeze_game_schedule_bumps_modified_at(sample_game_date):
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    with patch("common.dynamo._now", side_effect=["T0", "T1"]):
+        create_game(sample_game_date)
+        freeze_game_schedule(sample_game_date, "18:00", 2)
+
+    item = _game_item(dynamodb, sample_game_date, "gameStatus")
+    assert item["createdAt"] == "T0"
+    assert item["modifiedAt"] == "T1"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_add_guests_to_game_status_bumps_modified_at(sample_game_date):
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    guest = {"pk": "a@x.com", "sk": "guest#active#G", "name": "G",
+             "sponsorEmail": "a@x.com", "sponsorName": "A"}
+    with patch("common.dynamo._now", side_effect=["T0", "T1"]):
+        create_game(sample_game_date)
+        add_guests_to_game_status(sample_game_date, "YES", [guest])
+
+    item = _game_item(dynamodb, sample_game_date, "playerStatus#YES")
+    assert item["createdAt"] == "T0"
+    assert item["modifiedAt"] == "T1"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_remove_sponsor_guests_bumps_modified_at(sample_game_date):
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    guest = {"pk": "a@x.com", "sk": "guest#active#G", "name": "G",
+             "sponsorEmail": "a@x.com", "sponsorName": "A"}
+    with patch("common.dynamo._now", side_effect=["T0", "T1", "T2"]):
+        create_game(sample_game_date)
+        add_guests_to_game_status(sample_game_date, "YES", [guest])
+        remove_sponsor_guests_from_status(sample_game_date, "YES", "a@x.com")
+
+    item = _game_item(dynamodb, sample_game_date, "playerStatus#YES")
+    assert item["modifiedAt"] == "T2"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_remove_guest_from_status_bumps_modified_at(sample_game_date):
+    from common.dynamo import remove_guest_from_status
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    guest = {"pk": "a@x.com", "sk": "guest#active#G", "name": "G",
+             "sponsorEmail": "a@x.com", "sponsorName": "A"}
+    with patch("common.dynamo._now", side_effect=["T0", "T1", "T2"]):
+        create_game(sample_game_date)
+        add_guests_to_game_status(sample_game_date, "YES", [guest])
+        remove_guest_from_status(sample_game_date, "YES", "a@x.com")
+
+    item = _game_item(dynamodb, sample_game_date, "playerStatus#YES")
+    assert item["modifiedAt"] == "T2"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_move_confirmed_guests_bumps_both_items(sample_game_date):
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+
+    guest = {"pk": "a@x.com", "sk": "guest#active#G", "name": "G",
+             "sponsorEmail": "a@x.com", "sponsorName": "A"}
+    with patch("common.dynamo._now", side_effect=["T0", "T1", "T2"]):
+        create_game(sample_game_date)
+        add_guests_to_game_status(sample_game_date, "NO", [guest])
+        move_confirmed_guests(sample_game_date, "a@x.com", ["G"])
+
+    assert _game_item(dynamodb, sample_game_date, "playerStatus#NO")["modifiedAt"] == "T2"
+    assert _game_item(dynamodb, sample_game_date, "playerStatus#YES")["modifiedAt"] == "T2"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_set_week_no_game_stamps_timestamps():
+    _reset_dynamo_caches()
+    _create_tables()
+
+    with patch("common.dynamo._now", return_value="T0"):
+        set_week_no_game("2026-06-29", "no_response")
+
+    item = get_week_status("2026-06-29")
+    assert item["createdAt"] == "T0"
+    assert item["modifiedAt"] == "T0"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_deactivate_player_preserves_created_bumps_modified():
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+    table = dynamodb.Table("test-players")
+
+    with patch("common.dynamo._now", side_effect=["T0", "T1"]):
+        add_player("alice@example.com", "Alice")
+        deactivate_player("alice@example.com")
+
+    item = table.get_item(Key={"email": "alice@example.com", "active": "false"})["Item"]
+    assert item["createdAt"] == "T0"
+    assert item["modifiedAt"] == "T1"
+
+
+@pytest.mark.unit
+@mock_aws
+def test_increment_rate_limit_stamps_timestamps():
+    _reset_dynamo_caches()
+    dynamodb = _create_tables()
+    table = dynamodb.Table("test-players")
+
+    with patch("common.dynamo._now", side_effect=["T0", "T1"]):
+        increment_rate_limit_count("alice@example.com", "2026-06-29")
+        increment_rate_limit_count("alice@example.com", "2026-06-29")
+
+    item = table.get_item(
+        Key={"email": "alice@example.com", "active": "ratelimit#2026-06-29"}
+    )["Item"]
+    assert item["createdAt"] == "T0"
+    assert item["modifiedAt"] == "T1"
