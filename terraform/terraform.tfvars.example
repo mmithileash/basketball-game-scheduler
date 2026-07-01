@@ -4,3 +4,10 @@ game_location = "Your Court / Venue, 1 Example St, City"
 # Optional: link the location to a map. Leave empty to show the plain address.
 game_map_url  = "https://www.google.com/maps/place/Your+Venue"
 admin_email   = "admin@example.com"
+
+# Monitoring & alerting (optional — sensible defaults apply)
+# alert_email                = "alerts@example.com" # defaults to admin_email
+# monthly_budget_limit_usd   = 50
+# lambda_duration_alarm_threshold_ms = 45000
+# ses_bounce_rate_threshold    = 0.05
+# ses_complaint_rate_threshold = 0.001
