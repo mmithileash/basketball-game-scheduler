@@ -51,8 +51,16 @@ def parse_args():
 
 
 def read_players_from_csv(csv_file):
-    """Read players from a CSV file. Returns a list of dicts with 'email' and optional 'name'."""
+    """Read players from a CSV file. Returns a list of dicts with 'email' and optional 'name'.
+
+    Emails must already be lowercase. DynamoDB key lookups are exact-match and
+    the email_processor normalises sender addresses to lowercase, so a stored
+    key with any uppercase character would silently never match its owner's
+    replies. Rather than rewrite the operator's data, reject such rows so the
+    source CSV can be corrected.
+    """
     players = []
+    invalid = []  # (row number, raw email) for emails containing uppercase
     with open(csv_file, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
 
@@ -63,10 +71,15 @@ def read_players_from_csv(csv_file):
 
         has_name_column = "name" in reader.fieldnames
 
-        for row in reader:
+        # start=2: row 1 is the header, so data rows are numbered from 2
+        for row_num, row in enumerate(reader, start=2):
             email = row["email"].strip()
             if not email:
                 continue  # Skip rows with empty email
+
+            if email != email.lower():
+                invalid.append((row_num, email))
+                continue
 
             name = None
             if has_name_column:
@@ -75,6 +88,12 @@ def read_players_from_csv(csv_file):
                     name = raw_name
 
             players.append({"email": email, "name": name})
+
+    if invalid:
+        print("Error: emails must be lowercase. Offending rows:", file=sys.stderr)
+        for row_num, email in invalid:
+            print(f"  line {row_num}: {email}", file=sys.stderr)
+        sys.exit(1)
 
     return players
 

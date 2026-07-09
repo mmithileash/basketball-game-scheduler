@@ -30,10 +30,13 @@ def extract_sender_email(from_header: str) -> str:
     """Extract the email address from a From header value.
 
     Handles both 'Name <email@example.com>' and bare 'email@example.com' formats.
+    The address is lower-cased so a sender's identity is stable regardless of
+    the casing their mail client presents — Players-table keys and roster map
+    keys are exact-match, so 'Foo@Bar.com' and 'foo@bar.com' must not diverge.
     """
     if "<" in from_header and ">" in from_header:
-        return from_header.split("<")[1].split(">")[0].strip()
-    return from_header.strip()
+        return from_header.split("<")[1].split(">")[0].strip().lower()
+    return from_header.strip().lower()
 
 
 class _HTMLToText(HTMLParser):

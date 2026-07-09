@@ -33,6 +33,19 @@ def strip_pk(pk_value: str) -> str:
     return pk_value.split("#", 1)[1]
 
 
+def normalize_email(email: str) -> str:
+    """Canonicalise an email address for use as an identity key.
+
+    Emails are the primary key of the Players table and the map key of the
+    roster; DynamoDB key lookups are exact-match and case-sensitive, so a
+    player stored as 'Foo@Bar.com' would not match a reply whose From header
+    reads 'foo@bar.com'. Lowercasing (and trimming) at every read/write of an
+    email key keeps a person's identity stable regardless of the casing their
+    mail client presents. Idempotent, so it is safe to apply redundantly.
+    """
+    return email.strip().lower()
+
+
 def _now() -> str:
     """Current UTC time as an ISO 8601 string, used for createdAt/modifiedAt stamps."""
     return datetime.now(timezone.utc).isoformat()
@@ -268,6 +281,7 @@ def update_player_response(
     If old_status is provided, uses TransactWriteItems to atomically remove
     from old status and add to new status. Otherwise, just sets on new status.
     """
+    email = normalize_email(email)
     config = _get_config()
     client = _get_client()
     now = _now()
@@ -369,6 +383,7 @@ def get_pending_players(game_date: str) -> list[dict[str, Any]]:
 
 def get_player_name(email: str) -> str | None:
     """Get the name of an active player from the Players table."""
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
@@ -402,6 +417,8 @@ def create_guest_entry(
     Returns the guest object {pk, sk, name, sponsorEmail, sponsorName}
     to be stored in the Games table guests list.
     """
+    sponsor_email = normalize_email(sponsor_email)
+    contact_email = normalize_email(contact_email) if contact_email else None
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
@@ -485,6 +502,7 @@ def remove_sponsor_guests_from_status(
     Reads the current guests list, filters out the sponsor's guests,
     writes back the remaining list, and returns the removed guest objects.
     """
+    sponsor_email = normalize_email(sponsor_email)
     config = _get_config()
     table = _get_resource().Table(config.games_table)
     client = _get_client()
@@ -524,6 +542,7 @@ def move_confirmed_guests(
     Only guests matching confirmed_names (by name) and sponsorEmail are moved.
     Remaining guests stay in NO.
     """
+    sponsor_email = normalize_email(sponsor_email)
     config = _get_config()
     table = _get_resource().Table(config.games_table)
     client = _get_client()
@@ -581,6 +600,7 @@ def move_confirmed_guests(
 
 def add_player(email: str, name: str, is_admin: bool = False) -> None:
     """Add a new active player to the Players table."""
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
@@ -601,6 +621,7 @@ def add_player(email: str, name: str, is_admin: bool = False) -> None:
 
 def is_admin(email: str) -> bool:
     """Return True if the email belongs to an active admin player."""
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
@@ -632,6 +653,7 @@ def _to_ddb_attr(value: Any) -> dict[str, Any]:
 
 def deactivate_player(email: str) -> None:
     """Move a player from active to inactive, preserving all attributes."""
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
     client = _get_client()
@@ -669,6 +691,7 @@ def deactivate_player(email: str) -> None:
 
 def reactivate_player(email: str) -> None:
     """Move a player from inactive to active, preserving all attributes."""
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
     client = _get_client()
@@ -715,6 +738,7 @@ def increment_rate_limit_count(email: str, week_start: str) -> int:
     never both slip past the cap. An ``expiresAt`` epoch is stamped once so
     DynamoDB TTL self-deletes the stale weekly row.
     """
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
@@ -745,6 +769,7 @@ def get_sender_role(email: str) -> str:
     - 'guest'   — confirmed guest with their own contact email (active='guest#active')
     - 'unknown' — not found in either form (incl. deactivated players)
     """
+    email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
