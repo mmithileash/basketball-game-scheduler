@@ -44,6 +44,35 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def _resolve_location(
+    game_date: str, game_info: dict[str, Any], partials: list[str]
+) -> dict[str, Any] | None:
+    """Classify a game's venue: override, default, or partial.
+
+    A custom venue is both-or-neither: the admin must supply both a name and a
+    valid (http/https) map URL. Returns the {name, mapUrl} override when both are
+    present, None to fall back to the configured default when neither is, and
+    appends to `partials` (holding the whole batch) when the pair is incomplete.
+    """
+    name = game_info.get("location")
+    map_url = game_info.get("mapUrl")
+    has_valid_url = isinstance(map_url, str) and map_url.startswith(("http://", "https://"))
+
+    if name and has_valid_url:
+        return {"name": name, "mapUrl": map_url}
+    if not name and not map_url:
+        return None
+    if name:
+        partials.append(
+            f"  - {game_date}: you named the venue '{name}' but didn't give a valid map link."
+        )
+    else:
+        partials.append(
+            f"  - {game_date}: you gave a map link but didn't name the venue."
+        )
+    return None
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler: process admin command emails."""
     s3_record = event["Records"][0]["s3"]
@@ -85,9 +114,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         config = load_config()
 
-        # Classify each game by how many of (start time, duration) the admin gave.
+        # Classify each game by how many of (start time, duration) the admin gave,
+        # and likewise resolve its venue (both name and map URL, or neither).
         partials: list[str] = []
-        plans: list[tuple[str, dict[str, Any]]] = []
+        plans: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
         for game_info in games_to_schedule:
             game_date = game_info.get("date")
             if not game_date:
@@ -98,20 +128,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             has_duration = duration_hours is not None
 
             if has_time and has_duration:
-                plans.append((game_date, fixed_policy(
+                policy = fixed_policy(
                     start_time,
                     int(duration_hours),
                     threshold=config.long_game_threshold,
                     min_players=config.min_players,
-                )))
+                )
             elif not has_time and not has_duration:
-                plans.append((game_date, default_policy(config)))
+                policy = default_policy(config)
             else:
                 missing = "duration" if has_time else "start time"
                 given = f"start time {start_time}" if has_time else f"duration {duration_hours}h"
                 partials.append(
                     f"  - {game_date}: you gave a {given} but no {missing}."
                 )
+                policy = None  # timing partial; batch already held
+
+            location = _resolve_location(game_date, game_info, partials)
+
+            if policy is not None:
+                plans.append((game_date, policy, location))
 
         # Any partial spec holds the whole batch: create nothing, ask for a clean resend.
         if partials:
@@ -120,7 +156,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 f"Re: {subject}",
                 "I couldn't schedule your games because some were incomplete. "
                 "A game needs either no time at all (and I'll use the default tiers) "
-                "or both a start time and a duration.\n\n"
+                "or both a start time and a duration, and a custom venue needs both "
+                "a name and a map link.\n\n"
                 + "\n".join(partials)
                 + "\n\nNothing was scheduled. Please resend the complete command.",
             )
@@ -130,8 +167,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         sfn = _get_sfn_client() if sfn_arn else None
         scheduled: list[str] = []
 
-        for game_date, policy in plans:
-            create_game(game_date, policy)
+        for game_date, policy, location in plans:
+            create_game(game_date, policy, location=location)
             if sfn and sfn_arn:
                 execution_input = sfn_timestamps_for_game(game_date)
                 try:

@@ -403,6 +403,90 @@ def test_schedule_games_partial_holds_whole_batch(mocker):
 
 
 @pytest.mark.unit
+def test_schedule_games_without_location_defaults(mocker):
+    """A game with no venue details is created with location=None (config default)."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None,
+             "location": None, "mapUrl": None},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["location"] is None
+
+
+@pytest.mark.unit
+def test_schedule_games_with_location_override_snapshots_it(mocker):
+    """A venue name plus a valid map URL is snapshotted as the game's location."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None,
+             "location": "The YMCA", "mapUrl": "https://maps.app/xyz"},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday at the YMCA, map https://maps.app/xyz")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["location"] == {
+        "name": "The YMCA", "mapUrl": "https://maps.app/xyz",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("location, map_url, missing_hint", [
+    ("The YMCA", None, "map link"),
+    (None, "https://maps.app/xyz", "name"),
+    ("The YMCA", "not-a-url", "map link"),
+])
+def test_schedule_games_partial_location_holds_whole_batch(mocker, location, map_url, missing_hint):
+    """An incomplete venue (name without valid URL, or URL without name) holds the batch."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-11", "startTime": None, "durationHours": None,
+             "location": location, "mapUrl": map_url},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday somewhere")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "2026-07-11" in body
+    assert missing_hint in body.lower()
+
+
+@pytest.mark.unit
 def test_schedule_games_sfn_already_exists_is_noop(mocker):
     """ExecutionAlreadyExists during start_execution is silently ignored."""
     mocker.patch("admin_processor.handler.is_admin", return_value=True)

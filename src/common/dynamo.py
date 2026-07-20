@@ -124,12 +124,18 @@ def get_active_admins() -> list[dict[str, Any]]:
     return [{"email": item["email"], "name": item.get("name")} for item in items]
 
 
-def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
+def create_game(
+    game_date: str,
+    policy: dict[str, Any] | None = None,
+    location: dict[str, Any] | None = None,
+) -> None:
     """Create a new game with status OPEN and atomically increment the week's gameCount.
 
-    The game's policy is stored as a map on the gameStatus item. When no policy
-    is supplied, a default two-tier policy is seeded from configuration so the
-    policy block is always present on the record.
+    The game's policy and location are stored as maps on the gameStatus item.
+    When no policy is supplied, a default two-tier policy is seeded from
+    configuration so the policy block is always present. Likewise, when no
+    location is supplied, the configured default venue name and map URL are
+    snapshotted onto the record so the game is always self-describing.
     """
     config = _get_config()
     client = _get_client()
@@ -139,6 +145,9 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
     if policy is None:
         from common.policy import default_policy
         policy = default_policy(config)
+
+    if location is None:
+        location = {"name": config.game_location, "mapUrl": config.game_map_url}
 
     pk = game_pk(game_date)
     ts = {"createdAt": {"S": now}, "modifiedAt": {"S": now}}
@@ -151,6 +160,7 @@ def create_game(game_date: str, policy: dict[str, Any] | None = None) -> None:
                     "sk": {"S": "gameStatus"},
                     "status": {"S": "OPEN"},
                     "policy": _to_ddb_attr(policy),
+                    "location": _to_ddb_attr(location),
                     **ts,
                 },
             }

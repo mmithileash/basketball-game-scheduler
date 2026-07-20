@@ -14,6 +14,7 @@ def set_env_vars(monkeypatch):
     monkeypatch.setenv("SENDER_EMAIL", "scheduler@example.com")
     monkeypatch.setenv("ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("GAME_LOCATION", "Main Court")
+    monkeypatch.setenv("GAME_MAP_URL", "https://maps.example.com/main-court")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("LONG_GAME_THRESHOLD", "10")
     monkeypatch.setenv("MAX_GAMES_PER_WEEK", "1")

@@ -339,17 +339,25 @@ def _duration_label(hours: int) -> str:
     return f"{hours} hour{'s' if hours > 1 else ''}"
 
 
-def _location_display() -> str:
+def _location_display(location: dict[str, Any] | None = None) -> str:
     """The venue line for email bodies.
 
-    When a map URL is configured this returns markdown `[address](url)`, which
-    `_text_to_html` renders as an anchor whose visible text is the address; with
-    no map URL it falls back to the bare address (unchanged from before).
+    Takes the game's snapshotted `location` map ({name, mapUrl}). When it is
+    absent or empty — games created before per-game location existed — it falls
+    back to the configured default venue. When a map URL is present this returns
+    markdown `[name](url)`, which `_text_to_html` renders as an anchor whose
+    visible text is the name; with no map URL it falls back to the bare name.
     """
-    config = _get_config()
-    if config.game_map_url:
-        return f"[{config.game_location}]({config.game_map_url})"
-    return config.game_location
+    if location and location.get("name"):
+        name = location["name"]
+        map_url = location.get("mapUrl") or ""
+    else:
+        config = _get_config()
+        name = config.game_location
+        map_url = config.game_map_url
+    if map_url:
+        return f"[{name}]({map_url})"
+    return name
 
 
 _DIVIDER = "─" * 44
@@ -371,15 +379,17 @@ def send_tentative_announcement(
     player_name: str | None,
     game_date: str,
     policy: dict[str, Any],
+    location: dict[str, Any] | None = None,
 ) -> None:
     """Send game announcement driven by the game's policy.
 
     When the two tiers differ the email shows both turnout-dependent branches
-    with concrete times; when they are equal it shows a single time line.
+    with concrete times; when they are equal it shows a single time line. The
+    venue comes from the game's snapshotted `location`, falling back to the
+    configured default when none is supplied.
     """
     from common.policy import is_fixed
 
-    config = _get_config()
     greeting = f"Hi {player_name}" if player_name else "Hi"
     subject = f"Basketball Game - {game_date} [Game: {game_date}]"
 
@@ -408,7 +418,7 @@ def send_tentative_announcement(
         f"{_DIVIDER}\n"
         f"  Date:      {_pretty_date(game_date)}\n"
         f"{timing}"
-        f"  Location:  {_location_display()}\n\n"
+        f"  Location:  {_location_display(location)}\n\n"
         f"  We need at least {policy['minPlayers']} players to play.\n\n"
         f"{_DIVIDER}\n"
         f"HOW TO RESPOND\n"
@@ -435,9 +445,9 @@ def send_final_confirmation_with_duration(
     roster: dict[str, Any],
     start_time: str,
     duration_hours: int,
+    location: dict[str, Any] | None = None,
 ) -> None:
     """Send final game confirmation with the locked-in start time and duration."""
-    config = _get_config()
     subject = f"Confirmed: Basketball Game - {game_date} [Game: {game_date}]"
 
     yes_data = roster.get("YES", {})
@@ -455,7 +465,7 @@ def send_final_confirmation_with_duration(
         f"The basketball game is ON for {game_date}!\n\n"
         f"Time: {start_time}\n"
         f"Duration: {_duration_label(duration_hours)}\n"
-        f"Location: {_location_display()}\n\n"
+        f"Location: {_location_display(location)}\n\n"
         f"Confirmed players:\n{roster_text}\n\n"
         f"See you there!\n"
     )

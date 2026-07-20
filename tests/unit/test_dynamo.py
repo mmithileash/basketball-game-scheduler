@@ -238,6 +238,36 @@ def test_create_game_seeds_default_policy_when_omitted(sample_game_date):
 
 @pytest.mark.unit
 @mock_aws
+def test_create_game_seeds_default_location_when_omitted(sample_game_date):
+    """Omitting location snapshots the configured default name and map URL."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date)
+
+    item = get_game_status(sample_game_date)
+    assert item["location"] == {
+        "name": "Main Court",
+        "mapUrl": "https://maps.example.com/main-court",
+    }
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stores_explicit_location(sample_game_date):
+    """A location passed to create_game is snapshotted verbatim on the gameStatus item."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    location = {"name": "The YMCA", "mapUrl": "https://maps.app/xyz"}
+    create_game(sample_game_date, location=location)
+
+    item = get_game_status(sample_game_date)
+    assert item["location"] == location
+
+
+@pytest.mark.unit
+@mock_aws
 def test_freeze_game_schedule_persists_resolved_time_and_duration(sample_game_date):
     """freeze_game_schedule writes the resolved start time and duration onto the game."""
     _reset_dynamo_caches()

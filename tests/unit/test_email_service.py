@@ -495,6 +495,58 @@ def test_send_tentative_announcement_tiered_has_how_to_respond_block(mocker):
 
 
 @pytest.mark.unit
+def test_announcement_falls_back_to_config_location_when_none(mocker):
+    """With no location supplied, the announcement renders the configured default venue."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _TIERED_POLICY)
+    body = mock_send.call_args[0][2]
+    assert "[Main Court](https://maps.example.com/main-court)" in body
+
+
+@pytest.mark.unit
+def test_announcement_renders_supplied_location_override(mocker):
+    """A supplied location overrides the configured default in the announcement."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    location = {"name": "The YMCA", "mapUrl": "https://maps.app/xyz"}
+    send_tentative_announcement(
+        "player@example.com", "Alice", "2026-07-07", _TIERED_POLICY, location=location
+    )
+    body = mock_send.call_args[0][2]
+    assert "[The YMCA](https://maps.app/xyz)" in body
+    assert "Main Court" not in body
+
+
+@pytest.mark.unit
+def test_announcement_location_without_map_url_renders_bare_name(mocker):
+    """A location whose mapUrl is empty renders the plain venue name, no hyperlink."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    location = {"name": "The Park", "mapUrl": ""}
+    send_tentative_announcement(
+        "player@example.com", "Alice", "2026-07-07", _TIERED_POLICY, location=location
+    )
+    body = mock_send.call_args[0][2]
+    assert "The Park" in body
+    assert "[The Park]" not in body
+
+
+@pytest.mark.unit
+def test_final_confirmation_renders_supplied_location_override(mocker):
+    """A supplied location overrides the configured default in the final confirmation."""
+    roster = {
+        "YES": {"players": {"player@example.com": {"name": "Alice"}}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+    mock_send = mocker.patch("common.email_service.send_email")
+    location = {"name": "The YMCA", "mapUrl": "https://maps.app/xyz"}
+    send_final_confirmation_with_duration(
+        "player@example.com", "2026-04-12", roster, "10:00 AM", 2, location=location
+    )
+    body = mock_send.call_args[0][2]
+    assert "[The YMCA](https://maps.app/xyz)" in body
+
+
+@pytest.mark.unit
 def test_send_tentative_announcement_fixed_has_how_to_respond_block(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
     send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _FIXED_POLICY)

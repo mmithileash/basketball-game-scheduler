@@ -71,7 +71,7 @@ Admin-driven, multi-game-per-week scheduling, orchestrated by Step Functions per
 - `date_utils.py` — `week_start_for_date()`, `sfn_timestamps_for_game()`
 - `dynamo.py` — All DynamoDB operations (create game, get/update roster, get pending players, weekStatus helpers, get_open_games)
 - `email_service.py` — SES send layer with templates for all email types
-- `bedrock_client.py` — Bedrock integration; `parse_player_email` returns structured JSON `{intent, guests, confirmed_guest_names, query_target, reply_draft}`; `parse_admin_email` returns `{intent, game_date, email, name, is_admin, games}` where each game is `{date, startTime|null, durationHours|null}` (unmentioned timing is reported as null, never defaulted)
+- `bedrock_client.py` — Bedrock integration; `parse_player_email` returns structured JSON `{intent, guests, confirmed_guest_names, query_target, reply_draft}`; `parse_admin_email` returns `{intent, game_date, email, name, is_admin, games}` where each game is `{date, startTime|null, durationHours|null, location|null, mapUrl|null}` (unmentioned timing and venue are reported as null, never defaulted)
 - `policy.py` — per-game policy helpers: `default_policy()`, `fixed_policy()`, `resolve_tier()` (shared by announce + confirm), `is_fixed()`
 
 ### DynamoDB Data Model
@@ -85,7 +85,7 @@ Admin-driven, multi-game-per-week scheduling, orchestrated by Step Functions per
 The prefix (`GAME#`/`WEEK#`) is an **internal storage detail confined to `common/dynamo.py`** — built via the `game_pk()`/`week_pk()` helpers and stripped on read by `strip_pk()`. Every other layer (handlers, Step Functions input, the `game-{date}` execution name, email templates) deals in bare ISO dates, and read functions (`get_game_status`, `get_open_games`) still expose a bare `gameDate` field. The prefix exists because the old `gameDate` PK attribute lied: the `weekStatus` counter row is keyed by a Monday week-start, not a game date, which repeatedly misled readers into thinking the wrong date was stored. The Monday-keyed `weekStatus` row is intentional — its `Update`/`if_not_exists` upsert must accumulate `gameCount` across multiple games per week.
 
 SK values are unchanged:
-- `gameStatus` → `{status: OPEN|CANCELLED|PLAYED, createdAt, policy, confirmedStartTime?, confirmedDurationHours?}` — `policy` is `{minPlayers, threshold, longGame:{startTime,durationHours}, shortGame:{startTime,durationHours}}` (a fixed game has equal tiers); the `confirmed*` fields are frozen at the confirm step
+- `gameStatus` → `{status: OPEN|CANCELLED|PLAYED, createdAt, policy, location, confirmedStartTime?, confirmedDurationHours?}` — `policy` is `{minPlayers, threshold, longGame:{startTime,durationHours}, shortGame:{startTime,durationHours}}` (a fixed game has equal tiers); `location` is `{name, mapUrl}` snapshotted at creation from config default unless the admin overrides it (both name and map URL required); the `confirmed*` fields are frozen at the confirm step
 - `playerStatus#YES` → map of `{email: {guests: [...]}}`
 - `playerStatus#NO` → map of `{email: {}}`
 - `playerStatus#MAYBE` → map of `{email: {}}`
