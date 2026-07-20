@@ -95,7 +95,7 @@ SK values are unchanged:
 
 Provisions: EventBridge cron rules, 8 Lambda functions, a Step Functions state machine (`basketball-game-lifecycle`), SES domain + receipt rules, S3 bucket (email storage), DynamoDB tables, Route 53 MX records, IAM roles.
 
-Key variables (set in `terraform.tfvars`): `domain_name`, `sender_email`, `admin_email`, `game_location`, `bedrock_model_id`, `min_players`, `long_game_threshold`, `long_game_start_time`, `long_game_duration_hours`, `short_game_start_time`, `short_game_duration_hours`, `max_games_per_week`. The threshold and tier start/duration values seed each game's policy at creation; they are not read at runtime.
+Key variables (set in `terraform.tfvars`): `domain_name`, `sender_email`, `admin_email`, `default_game_location`, `default_game_map_url`, `bedrock_model_id`, `min_players`, `long_game_threshold`, `long_game_start_time`, `long_game_duration_hours`, `short_game_start_time`, `short_game_duration_hours`, `max_games_per_week`. The threshold and tier start/duration values seed each game's policy at creation; they are not read at runtime.
 
 ### Testing
 

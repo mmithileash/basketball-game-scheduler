@@ -353,8 +353,8 @@ def _location_display(location: dict[str, Any] | None = None) -> str:
         map_url = location.get("mapUrl") or ""
     else:
         config = _get_config()
-        name = config.game_location
-        map_url = config.game_map_url
+        name = config.default_game_location
+        map_url = config.default_game_map_url
     if map_url:
         return f"[{name}]({map_url})"
     return name

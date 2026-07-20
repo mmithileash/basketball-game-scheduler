@@ -147,7 +147,7 @@ def create_game(
         policy = default_policy(config)
 
     if location is None:
-        location = {"name": config.game_location, "mapUrl": config.game_map_url}
+        location = {"name": config.default_game_location, "mapUrl": config.default_game_map_url}
 
     pk = game_pk(game_date)
     ts = {"createdAt": {"S": now}, "modifiedAt": {"S": now}}

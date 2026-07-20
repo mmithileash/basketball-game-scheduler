@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-Every game announcement and confirmation email shows a single, system-wide venue: the location name and map link come from the `GAME_LOCATION` / `GAME_MAP_URL` environment variables baked into the Lambda config. If a particular week's game is played somewhere other than the usual court, the admin has no way to say so — the email will always name the default venue, and there is no per-game record of where a game was actually played.
+Every game announcement and confirmation email shows a single, system-wide venue: the location name and map link come from the `DEFAULT_GAME_LOCATION` / `DEFAULT_GAME_MAP_URL` environment variables baked into the Lambda config. If a particular week's game is played somewhere other than the usual court, the admin has no way to say so — the email will always name the default venue, and there is no per-game record of where a game was actually played.
 
 The admin already schedules games in natural language and can attach a start time and duration to any individual game ("Saturday at 10am for 2 hours"). Location is the one game-shaping detail they cannot express.
 
@@ -32,13 +32,13 @@ A venue override requires **both** a name and a valid map URL. A half-specified 
 12. As a player, I want a game announced at a custom venue to name that venue rather than the default, so that I am not misled about where to play.
 13. As an operator, I want each game record to carry the venue it was scheduled with, so that changing the configured default later never rewrites the venue of games that already exist.
 14. As an operator, I want games created before this feature to keep rendering the configured default venue, so that no data backfill or migration is required.
-15. As an operator, I want the existing `GAME_LOCATION` / `GAME_MAP_URL` configuration to keep working as the default source, so that deployment configuration does not have to change.
+15. As an operator, I want the existing `DEFAULT_GAME_LOCATION` / `DEFAULT_GAME_MAP_URL` configuration to keep working as the default source, so that deployment configuration does not have to change.
 
 ## Implementation Decisions
 
 **Data model (Games table, `gameStatus` item).** A new top-level field `location: {name, mapUrl}` is added to the `gameStatus` item, sitting parallel to `policy` — *not* nested inside `policy`. Location is a venue, conceptually distinct from the turnout/timing tiers, and it does not participate in tier resolution or the confirm-step freeze. It is written once at creation and never mutated over the lifecycle.
 
-**Snapshot at creation.** Location is snapshotted onto the record at game creation, the same way `policy` is. A default (non-overridden) game stores `{name: config.game_location, mapUrl: config.game_map_url}` — the record is always self-describing, and a later change to the configured default never retroactively alters past games.
+**Snapshot at creation.** Location is snapshotted onto the record at game creation, the same way `policy` is. A default (non-overridden) game stores `{name: config.default_game_location, mapUrl: config.default_game_map_url}` — the record is always self-describing, and a later change to the configured default never retroactively alters past games.
 
 **Parse contract (`common/bedrock_client.parse_admin_email`).** Each game object in the returned `games[]` array gains two new nullable fields, `location` (the venue name) and `mapUrl`, alongside the existing `startTime` / `durationHours`. They follow the same contract: an unmentioned field is reported as `null`, never defaulted. The system prompt and its examples are extended so the model can extract a venue name and an accompanying map URL from prose.
 
@@ -47,9 +47,9 @@ A venue override requires **both** a name and a valid map URL. A half-specified 
 - both present, and `mapUrl` begins with `http://` or `https://` → override `{name, mapUrl}`
 - exactly one present, or a name accompanied by a `mapUrl` that fails the `http(s)` check → **partial**: appended to the existing `partials` list, which holds the whole batch (nothing scheduled) and emails the admin to resend a complete command.
 
-The configured default is **exempt** from the both-or-neither rule: `GAME_MAP_URL` may legitimately be empty, in which case the email renders a bare venue name (unchanged from today).
+The configured default is **exempt** from the both-or-neither rule: `DEFAULT_GAME_MAP_URL` may legitimately be empty, in which case the email renders a bare venue name (unchanged from today).
 
-**Write path (`common/dynamo.create_game`).** Signature becomes `create_game(game_date, policy=None, location=None)`. `create_game` owns the default snapshot: when `location` is `None` it seeds `{name: config.game_location, mapUrl: config.game_map_url}`. This keeps the many bare `create_game(date)` call sites working and mirrors how `policy=None` is defaulted today.
+**Write path (`common/dynamo.create_game`).** Signature becomes `create_game(game_date, policy=None, location=None)`. `create_game` owns the default snapshot: when `location` is `None` it seeds `{name: config.default_game_location, mapUrl: config.default_game_map_url}`. This keeps the many bare `create_game(date)` call sites working and mirrors how `policy=None` is defaulted today.
 
 **Read path (`common/email_service`).** `_location_display()` is changed to accept the stored `location` dict rather than reaching into config directly; when the dict is absent or empty it falls back to `_get_config()` exactly as today (this fallback now only fires for games created before this feature). The two email functions that render a venue — `send_tentative_announcement` and `send_final_confirmation_with_duration` — gain a `location` parameter. Their callers, the `announce_task` and `confirm_or_cancel_task` Step Functions Lambdas, already load the game record and pass `game.get("location")` down. Reminder and finalize emails render no venue and are untouched.
 
@@ -72,7 +72,7 @@ Modules and behaviors to cover:
 - Rendering a venue in reminder or finalize emails (they show none today).
 - A named-venue registry or lookup, auto-generation of map URLs from a venue name, and geocoding/validation of the venue beyond the light `http(s)` URL-shape check.
 - Backfilling location onto games created before this feature (the read-time config fallback covers them).
-- Changes to the `GAME_LOCATION` / `GAME_MAP_URL` environment variables or Terraform configuration; they remain as the default source.
+- Changes to the `DEFAULT_GAME_LOCATION` / `DEFAULT_GAME_MAP_URL` environment variables or Terraform configuration; they remain as the default source.
 
 ## Further Notes
 

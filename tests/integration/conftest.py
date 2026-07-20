@@ -77,7 +77,7 @@ def env_vars():
     os.environ["EMAIL_BUCKET"] = EMAIL_BUCKET
     os.environ["SENDER_EMAIL"] = SENDER_EMAIL
     os.environ["ADMIN_EMAIL"] = "admin@example.com"
-    os.environ["GAME_LOCATION"] = "Main Court"
+    os.environ["DEFAULT_GAME_LOCATION"] = "Main Court"
     os.environ["BEDROCK_MODEL_ID"] = "anthropic.claude-3-haiku-20240307-v1:0"
     # boto3 >= 1.34 honours this env var natively, routing every service call
     # (DynamoDB, S3, SES, ...) to LocalStack without code changes.

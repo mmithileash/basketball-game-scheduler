@@ -115,8 +115,8 @@ Terraform will prompt for required variables, or create a `terraform.tfvars` fil
 domain_name    = "yourdomain.com"
 sender_email   = "scheduler@yourdomain.com"
 admin_email    = "admin@yourdomain.com"
-game_location  = "Community Center Court"
-game_map_url   = "https://www.google.com/maps/place/Your+Venue"
+default_game_location = "Community Center Court"
+default_game_map_url  = "https://www.google.com/maps/place/Your+Venue"
 ```
 
 ### 4. Import players
@@ -150,8 +150,8 @@ After `terraform apply`, update your domain registrar's nameservers to the ones 
 | `domain_name` | Domain for SES email | *(required)* |
 | `sender_email` | From address for outgoing emails | *(required)* |
 | `admin_email` | Admin command inbox (`admin@<domain>`) | *(required)* |
-| `game_location` | Game location shown in announcements | `TBD` |
-| `game_map_url` | Optional map link shown in announcements | `""` |
+| `default_game_location` | Default venue for games scheduled without an explicit location | `TBD` |
+| `default_game_map_url` | Optional map link for the default location | `""` |
 | `bedrock_model_id` | Bedrock inference profile for NLU | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 | `min_players` | Minimum confirmed players for a game to proceed | `6` |
 | `long_game_threshold` | Confirmed count at/above which the long-game tier applies (otherwise the short-game tier) | `10` |
