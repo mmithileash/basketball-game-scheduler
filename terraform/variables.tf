@@ -14,14 +14,14 @@ variable "sender_email" {
   type        = string
 }
 
-variable "game_location" {
-  description = "Default game location displayed in announcements"
+variable "default_game_location" {
+  description = "Default game location, used for any game the admin schedules without naming a venue"
   type        = string
   default     = "TBD"
 }
 
-variable "game_map_url" {
-  description = "Optional Google Maps (or similar) URL for the game location. When set, the location is rendered as a clickable link with the address as its text; leave empty to show the plain address."
+variable "default_game_map_url" {
+  description = "Optional Google Maps (or similar) URL for the default game location. When set, the location is rendered as a clickable link with the address as its text; leave empty to show the plain address."
   type        = string
   default     = ""
 }

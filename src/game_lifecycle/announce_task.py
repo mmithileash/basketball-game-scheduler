@@ -18,6 +18,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"game_date": game_date, "game_open": False}
 
     policy = game["policy"]
+    location = game.get("location")
     players = get_active_players()
     for player in players:
         try:
@@ -26,6 +27,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 player.get("name"),
                 game_date,
                 policy,
+                location=location,
             )
         except Exception:
             logger.error(f"Failed to send announcement to {player['email']}", exc_info=True)

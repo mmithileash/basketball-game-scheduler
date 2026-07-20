@@ -198,7 +198,8 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         "email": str | None,       # Target player email, for player management commands
         "name": str | None,        # Player name, for ADD_PLAYER / ADD_ADMIN
         "is_admin": bool | None,   # True for ADD_ADMIN
-        "games": list[{"date": str, "time": str}],  # for SCHEDULE_GAMES
+        "games": list[{"date": str, "startTime": str | None, "durationHours": int | None,
+                       "location": str | None, "mapUrl": str | None}],  # for SCHEDULE_GAMES
     }
     """
     config = _get_config()
@@ -232,13 +233,17 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         '  "email": "player email or null",\n'
         '  "name": "player name or null",\n'
         '  "is_admin": true/false/null,\n'
-        '  "games": [{{"date": "YYYY-MM-DD", "startTime": "display time e.g. 9:00 AM, or null", "durationHours": "integer or null"}}]\n'
+        '  "games": [{{"date": "YYYY-MM-DD", "startTime": "display time e.g. 9:00 AM, or null", "durationHours": "integer or null", "location": "venue name or null", "mapUrl": "map link URL or null"}}]\n'
         '}}\n\n'
         "For SCHEDULE_GAMES: populate 'games' with each game's date. Report ONLY what the "
         "admin actually said about timing: set 'startTime' to a display-ready time string "
         "(e.g. '9:00 AM') if they gave one, otherwise null; set 'durationHours' to the integer "
         "number of hours if they gave one, otherwise null. Do NOT invent or default a time or "
         "duration that wasn't mentioned. Games can be on any day of the week.\n"
+        "For each game's venue: set 'location' to the venue name if the admin named one "
+        "(e.g. 'the YMCA', 'Central Court'), otherwise null; set 'mapUrl' to the map link "
+        "if the admin gave a URL, otherwise null. Do NOT invent a venue or map link that "
+        "wasn't mentioned.\n"
         "For NO_GAMES_THIS_WEEK: set games to [].\n"
         "For CANCEL_GAME: set game_date to the date being cancelled (YYYY-MM-DD). "
         "If you truly cannot determine the date, set game_date to null.\n"
@@ -275,6 +280,8 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
                 "date": g.get("date"),
                 "startTime": g.get("startTime"),
                 "durationHours": g.get("durationHours"),
+                "location": g.get("location"),
+                "mapUrl": g.get("mapUrl"),
             }
             for g in result.get("games", [])
         ]

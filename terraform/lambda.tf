@@ -7,21 +7,21 @@ locals {
   }
 
   lambda_env_vars = {
-    PLAYERS_TABLE       = aws_dynamodb_table.players.name
-    GAMES_TABLE         = aws_dynamodb_table.games.name
-    EMAIL_BUCKET        = aws_s3_bucket.email_inbox.id
-    SENDER_EMAIL        = var.sender_email
-    GAME_LOCATION       = var.game_location
-    GAME_MAP_URL        = var.game_map_url
-    BEDROCK_MODEL_ID    = var.bedrock_model_id
-    MIN_PLAYERS         = tostring(var.min_players)
-    LONG_GAME_THRESHOLD = tostring(var.long_game_threshold)
+    PLAYERS_TABLE             = aws_dynamodb_table.players.name
+    GAMES_TABLE               = aws_dynamodb_table.games.name
+    EMAIL_BUCKET              = aws_s3_bucket.email_inbox.id
+    SENDER_EMAIL              = var.sender_email
+    DEFAULT_GAME_LOCATION     = var.default_game_location
+    DEFAULT_GAME_MAP_URL      = var.default_game_map_url
+    BEDROCK_MODEL_ID          = var.bedrock_model_id
+    MIN_PLAYERS               = tostring(var.min_players)
+    LONG_GAME_THRESHOLD       = tostring(var.long_game_threshold)
     LONG_GAME_START_TIME      = var.long_game_start_time
     LONG_GAME_DURATION_HOURS  = tostring(var.long_game_duration_hours)
     SHORT_GAME_START_TIME     = var.short_game_start_time
     SHORT_GAME_DURATION_HOURS = tostring(var.short_game_duration_hours)
-    MAX_GAMES_PER_WEEK  = tostring(var.max_games_per_week)
-    ADMIN_EMAIL         = var.admin_email
+    MAX_GAMES_PER_WEEK        = tostring(var.max_games_per_week)
+    ADMIN_EMAIL               = var.admin_email
   }
 
   lambda_admin_env_vars = merge(local.lambda_env_vars, {

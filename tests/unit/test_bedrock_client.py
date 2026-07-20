@@ -323,7 +323,27 @@ def test_parse_admin_email_schedule_games_reports_unmentioned_timing_as_null(moc
 
     result = parse_admin_email("Schedule Tuesday", "admin@example.com")
 
-    assert result["games"][0] == {"date": "2026-07-07", "startTime": None, "durationHours": None}
+    assert result["games"][0] == {
+        "date": "2026-07-07",
+        "startTime": None,
+        "durationHours": None,
+        "location": None,
+        "mapUrl": None,
+    }
+
+
+@pytest.mark.unit
+def test_parse_admin_email_schedule_games_surfaces_location(mocker):
+    """A venue name and map link mentioned by the admin come back on the game."""
+    _make_admin_bedrock_response(mocker, {
+        "intent": "SCHEDULE_GAMES",
+        "games": [{"date": "2026-07-07", "location": "The YMCA", "mapUrl": "https://maps.app/xyz"}],
+    })
+
+    result = parse_admin_email("Schedule Tuesday at the YMCA, map https://maps.app/xyz", "admin@example.com")
+
+    assert result["games"][0]["location"] == "The YMCA"
+    assert result["games"][0]["mapUrl"] == "https://maps.app/xyz"
 
 
 @pytest.mark.unit
