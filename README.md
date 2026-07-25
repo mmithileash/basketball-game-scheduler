@@ -4,10 +4,10 @@ An automated, email-based basketball game scheduler built on AWS serverless infr
 
 ## How It Works
 
-1. **Monday 9AM UTC** — `weekly-scheduler` checks whether next week already has the max number of games scheduled; if not, it emails active admins asking whether to schedule game(s)
-2. **Admin replies** in natural language — "Tuesday and Saturday", "No games this week" — `admin-processor` parses the command via Bedrock and either creates the game(s) (starting a per-game Step Functions execution) or marks the week as having no games
-3. **Tuesday 9PM UTC** — `weekly-cutoff-checker` notifies all players if the admin never responded
-4. **Per-game lifecycle** (`basketball-game-lifecycle` Step Functions execution): T-7d sends a tentative announcement, T-4d sends a low-signup reminder if needed, T-2d makes the go/no-go decision (cancelling, or resolving the turnout tier and locking in the game's start time and duration), and on game day the game is marked `PLAYED`
+1. **Monday 9AM UTC** — `weekly-scheduler` checks the **current** week; if it has fewer than the target number of live games (`min_games_per_week`, a floor) and no no-game decision is recorded, it emails active admins asking whether to schedule game(s). Games can be arranged and played in the same week.
+2. **Admin replies** in natural language — "Tuesday and Saturday", "No games this week" — `admin-processor` parses the command via Bedrock and either creates the game(s) (starting a per-game Step Functions execution) or marks the week as having no games. Any game starting less than 48h away, or with an unparseable time, holds the whole batch with an ask to resend. A future-week date is allowed and tracked on its own week.
+3. **Tuesday 9PM UTC** — `weekly-cutoff-checker` notifies all players **only when the current week genuinely ends with zero games** and no decision was already recorded
+4. **Per-game lifecycle** (`basketball-game-lifecycle` Step Functions execution): the announce/reminder/confirm/finalize moments are **adaptive**, anchored to the game's real start and scaling between a compressed 48h/36h/24h floor (same-week games) and a 7d/4d/2d cap (far-out games). Announce sends a tentative announcement (at creation for near-term games) showing the exact RSVP cutoff; reminder sends a low-signup nudge if needed; confirm (cutoff floored to the hour) makes the go/no-go decision (cancelling, or resolving the turnout tier and locking in the game's start time and duration); and after the game's actual end it is marked `PLAYED`
 5. **Players reply** in natural language — "I'm in", "Can't make it", "I'll bring 2 friends", "Who's playing?" — to whichever game's email thread they're responding to (the system disambiguates when multiple games are open at once)
 6. **The system understands** the intent via Claude (Bedrock) and updates that game's roster accordingly
 7. **Admins** can email `admin@<domain>` at any time to schedule/cancel games, add players, or deactivate/reactivate players
@@ -159,7 +159,7 @@ After `terraform apply`, update your domain registrar's nameservers to the ones 
 | `long_game_duration_hours` | Duration (hours) for the long-game tier | `2` |
 | `short_game_start_time` | Start time for the short-game tier | `11:00 AM` |
 | `short_game_duration_hours` | Duration (hours) for the short-game tier | `1` |
-| `max_games_per_week` | Max games per week before the Monday admin prompt is suppressed | `1` |
+| `min_games_per_week` | Target games per week (a floor): the Monday prompt fires while the current week has fewer than this many live games | `1` |
 | `environment` | Environment tag | `prod` |
 
 These threshold and tier start/duration values seed each game's **policy** at creation (the default two-tier policy). They are not read at runtime — a game carries its own policy on the record. An admin can override a specific game with a fixed start time and duration when scheduling (see [Admin Commands](#admin-commands)); supplying exactly one of the two is rejected and holds the whole batch.
@@ -209,6 +209,6 @@ Two DynamoDB tables with no GSIs:
 
 **Games** — `PK: pk (entity-prefixed: GAME#<YYYY-MM-DD> for a game, WEEK#<Monday YYYY-MM-DD> for weekStatus items), SK: gameStatus | playerStatus#YES | playerStatus#NO | playerStatus#MAYBE | weekStatus`
 
-The `GAME#`/`WEEK#` prefix is an internal storage detail confined to `common/dynamo.py`; handlers and emails deal in bare ISO dates throughout.
+The `GAME#`/`WEEK#` prefix is an internal storage detail confined to `common/dynamo.py`; handlers and emails deal in bare ISO dates throughout. A week's game count is computed live from its non-cancelled game rows (no stored counter); the `weekStatus` row persists only a no-game decision (`reason: no_response | admin_declined`) to keep the Tuesday cutoff idempotent.
 
 See [docs/architecture.md](docs/architecture.md) for full schema and access patterns.

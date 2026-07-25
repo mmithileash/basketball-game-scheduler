@@ -23,11 +23,11 @@ Natural language understanding is provided by AWS Bedrock (Claude Haiku) in eu-w
 
 ### Key design decisions
 
-- **Admin-driven, multi-game-per-week scheduling** — there is no fixed "every Saturday" game. Each week, the admin decides whether to schedule zero, one, or more games (up to `MAX_GAMES_PER_WEEK`), and on what dates/times.
-- **Step Functions per game, not cron-per-stage** — each game gets its own SFN execution carrying `announce_at`/`reminder_at`/`confirm_at`/`finalize_at` timestamps computed relative to its game date. This replaces fixed Mon/Wed/Fri/Sat cron rules for game-stage transitions, since games can now land on any day.
+- **Admin-driven, multi-game-per-week scheduling** — there is no fixed "every Saturday" game. Each week, the admin decides whether to schedule zero, one, or more games, and on what dates/times. `min_games_per_week` is a **floor** (a target that gates whether to prompt), not a cap — nothing limits how many games a week can hold.
+- **Adaptive Step Functions per game, not cron-per-stage** — each game gets its own SFN execution carrying `announce_at`/`reminder_at`/`confirm_at`/`finalize_at` timestamps. These are **adaptive**: anchored to the game's real (earliest-tier) start and interpolated between a compressed 48h/36h/24h floor (same-week games) and a 7d/4d/2d cap (far-out games), so a game scheduled and played in the same week still gets a sane announce→confirm cycle. Computed once at creation by `sfn_timestamps_for_game(game_date, policy, now)`; the state-machine structure is unchanged (the four `Wait` states just read different values).
 - **No queues (SQS)** — at this scale, Lambda direct invocation (via S3 event notification or SFN task) is sufficient.
 - **S3 as the email buffer** — SES stores the raw email in S3, which triggers the processing Lambda via S3 Event Notification. This decouples receiving from processing and gives a natural audit trail.
-- **Atomic weekly counters** — `create_game()` uses `TransactWriteItems` with an `if_not_exists()` counter increment, so multiple games scheduled in one admin reply never race on the `weekStatus` item.
+- **Live weekly game count, no stored counter** — a week's game count is computed on demand from its non-cancelled dated game rows (`count_games_in_week`), so cancellations are always reflected. The `weekStatus` row stores only a no-game decision.
 - **Single Bedrock call per inbound email** — the prompt includes the email body plus context (current roster, or upcoming dates for admin commands) so Claude can parse intent and draft a reply in one round trip.
 
 ---
@@ -36,18 +36,18 @@ Natural language understanding is provided by AWS Bedrock (Claude Haiku) in eu-w
 
 ### Step-by-step
 
-1. **Monday 9AM UTC** — EventBridge Scheduler triggers `weekly_scheduler`. It computes next week's Monday (`week_start_for_date(today + 7 days)`) and reads that week's `weekStatus` item.
-   - If `gameCount >= MAX_GAMES_PER_WEEK` or the admin already responded, no prompt is sent.
+1. **Monday 9AM UTC** — EventBridge Scheduler triggers `weekly_scheduler`. It targets the **current** week (`week_start_for_date(today)`) and computes its live game count with `count_games_in_week`.
+   - If the live count `>= min_games_per_week`, or a no-game decision (`reason`) is recorded on the week, no prompt is sent.
    - Otherwise, every active admin is emailed asking whether to schedule game(s) for that week.
 2. **Admin replies** in natural language (e.g. "Tuesday and Saturday", "No games this week") to `admin@<domain>`.
 3. `admin_processor` calls Bedrock (`parse_admin_email`), which classifies the intent as `SCHEDULE_GAMES` (one or more `{date, startTime?, durationHours?}` entries, where unmentioned timing is reported as `null`) or `NO_GAMES_THIS_WEEK` (among other admin intents — see §3).
-4. **`SCHEDULE_GAMES`**: each game is classified into a policy — neither timing field → default two-tier policy from config; both fields → fixed policy; exactly one field → ambiguous, which **holds the whole batch** (nothing is scheduled) and asks the admin to resend. For each valid game the Lambda calls `create_game(date, policy)` (atomically creates the `gameStatus` carrying the `policy` map + empty `playerStatus#*` items and increments the week's `gameCount`/sets `adminResponded`), then starts a Step Functions execution named `game-{date}` on the `basketball-game-lifecycle` state machine, seeded with `sfn_timestamps_for_game(date)`.
-5. **`NO_GAMES_THIS_WEEK`**: marks the week's `weekStatus` with `reason = admin_declined` and emails all active players that there's no game this week. No game record or SFN execution is created.
-6. **Tuesday 9PM UTC** — EventBridge Scheduler triggers `weekly_cutoff_checker`. If the admin still hasn't responded for next week (`adminResponded` is falsy), it marks the week `reason = no_response` and emails all active players that there's no game.
+4. **`SCHEDULE_GAMES`**: the handler computes one shared `now`. Each game is classified into a policy — neither timing field → default two-tier policy from config; both fields → fixed policy; exactly one field → ambiguous. Any problem — an ambiguous spec, an unparseable admin start time, or a start **less than 48h from `now`** (the viability guard, using the same earliest-tier `game_start` the lifecycle uses) — **holds the whole batch** (nothing is scheduled) and asks the admin to resend. For each valid game the Lambda computes the adaptive timestamps, calls `create_game(date, policy, location=…, confirm_at=…)` (creates the `gameStatus` carrying the `policy` map, `location`, and the floored `confirmAt` cutoff + empty `playerStatus#*` items — no week counter is written), then starts a Step Functions execution named `game-{date}` on the `basketball-game-lifecycle` state machine, seeded with `sfn_timestamps_for_game(date, policy, now)`. A future-week date is created on its own week's partition.
+5. **`NO_GAMES_THIS_WEEK`**: marks the **current** week's `weekStatus` with `reason = admin_declined` and emails all active players that there's no game this week. No game record or SFN execution is created.
+6. **Tuesday 9PM UTC** — EventBridge Scheduler triggers `weekly_cutoff_checker` for the **current** week. If a no-game decision is already recorded, it no-ops (idempotent); if the week has ≥1 live game, it no-ops (games self-announce); otherwise it marks the week `reason = no_response` and emails all active players that there's no game.
 
 ### Idempotency
 
-`create_game`'s `TransactWriteItems` sets `adminResponded = true` as part of the same atomic write that creates the game and bumps `gameCount`, so a late cutoff-check run can never overwrite a week the admin already responded to.
+The `weekStatus` row's `reason` marker is the idempotency key: once `weekly_cutoff_checker` (or the admin decline path) records a no-game decision, a repeat cutoff run no-ops. A week that has live game rows is never broadcast as "no game", because the cutoff checks the live count before sending.
 
 ---
 
@@ -100,27 +100,27 @@ The admin receipt rule uses `recipients = [admin@<domain>]` and is created first
 Each scheduled game gets its own Step Functions execution (`basketball-game-lifecycle`, started as `game-{gameDate}`), driven by four Wait → Task → Choice stages. Every stage's Task Lambda re-checks `gameStatus` and returns `game_open: false` if the game is no longer `OPEN` (e.g. an admin cancelled it); the following Choice state then routes straight to `Done`, halting the rest of the execution.
 
 ```
-WaitForAnnouncement (T-7d 9AM UTC)
+WaitForAnnouncement (announce_at: 48h..7d before start; at creation for near-term games)
   -> AnnounceGame -> CheckOpenAfterAnnounce -> [Done | WaitForReminder]
-WaitForReminder (T-4d 9AM UTC)
+WaitForReminder (reminder_at: 36h..4d before start)
   -> SendReminder -> CheckOpenAfterReminder -> [Done | WaitForConfirmOrCancel]
-WaitForConfirmOrCancel (T-2d 9AM UTC)
+WaitForConfirmOrCancel (confirm_at: 24h..2d before start, floored down to the hour)
   -> ConfirmOrCancel -> CheckOpenAfterConfirm -> [Done | WaitForFinalize]
-WaitForFinalize (game day 1PM UTC)
+WaitForFinalize (finalize_at: the conservative max end across both tiers)
   -> FinalizeGame -> Done
 ```
 
-The four timestamps (`announce_at`, `reminder_at`, `confirm_at`, `finalize_at`) are computed once by `sfn_timestamps_for_game(game_date)` and passed as the execution input by `admin_processor` when the game is created.
+The four timestamps (`announce_at`, `reminder_at`, `confirm_at`, `finalize_at`) are **adaptive**, computed once by `sfn_timestamps_for_game(game_date, policy, now)` and passed as the execution input by `admin_processor` when the game is created. Announce/reminder/confirm are anchored to the game's earliest-tier start and slide between a compressed floor (48h/36h/24h — same-week games) and an ideal cap (7d/4d/2d — far-out games) on a single lead-time parameter; the RSVP window and the confirm-notice-before-start are each always ≥24h. `confirm_at` is floored **down** to the whole hour (so the deadline shown to players is never later than the real roster freeze) and snapshotted onto the record as `confirmAt`. `finalize_at` is the maximum end across both tiers, so evening/past-midnight games aren't closed before they finish. A game under a week out announces effectively at creation (its first `Wait` elapses immediately).
 
-### Stage 1 — `announce_task` (T-7 days, 9AM UTC)
+### Stage 1 — `announce_task` (at `announce_at`)
 
-If the game is `OPEN`, sends a tentative announcement rendered from the game's `policy` to every active player — two turnout branches (short vs long tier) when the policy is tiered, or a single fixed line when both tiers are equal. Returns `game_open: false` without action if the game is not `OPEN`.
+If the game is `OPEN`, sends a tentative announcement rendered from the game's `policy` to every active player — two turnout branches (short vs long tier) when the policy is tiered, or a single fixed line when both tiers are equal — and shows the game's floored RSVP cutoff (read from the record's `confirmAt`) as a clean date+time. Returns `game_open: false` without action if the game is not `OPEN`.
 
-### Stage 2 — `reminder_task` (T-4 days, 9AM UTC)
+### Stage 2 — `reminder_task` (at `reminder_at`)
 
 If the game is `OPEN`, counts confirmed players+guests via `get_roster`. If below the policy's `minPlayers`, emails a low-signup reminder to all pending (not-yet-responded) active players.
 
-### Stage 3 — `confirm_or_cancel_task` (T-2 days, 9AM UTC)
+### Stage 3 — `confirm_or_cancel_task` (at `confirm_at`)
 
 The go/no-go decision point. If confirmed count is below the policy's `minPlayers`:
 - Marks the game `CANCELLED`
@@ -130,7 +130,7 @@ Otherwise:
 - Resolves the turnout tier via `resolve_tier(policy, confirmed_count)` (long tier at/above the policy's `threshold`, short tier below) and **freezes** both the start time and duration onto the game record as `confirmedStartTime` / `confirmedDurationHours`, so the time players are told can never be contradicted by later roster changes
 - Emails the final confirmation (with the frozen start time, duration, and roster) to all YES players and YES guests with a contact email
 
-### Stage 4 — `finalize_task` (game day, 1PM UTC)
+### Stage 4 — `finalize_task` (at `finalize_at`, after the game's actual end)
 
 If the game is still `OPEN`, marks it `PLAYED` and deletes all guest entries (from YES/NO/MAYBE rosters) from the Players table. Guest cleanup is best-effort — a failure here is logged and does not prevent the game from being marked `PLAYED`. No-ops if the game is `CANCELLED`/`PLAYED`/missing.
 
@@ -263,7 +263,7 @@ Guest entries are created on `BRING_GUESTS`/`UPDATE_GUESTS` and deleted by `fina
 
 Guests with `sk = "guest#active"` (own contact email as PK) are recognised as `role = "guest"` by `get_sender_role` and can email in to cancel their attendance or query the roster. Nameless guests (`sk = "guest#active#<name>"`, sponsor's email as PK) cannot email in directly.
 
-**Table 2: `Games`** — per-game state/RSVPs and weekly scheduling counters, in a single table
+**Table 2: `Games`** — per-game state/RSVPs and the slim weekly bookkeeping row, in a single table
 
 | Attribute | Key | Type | Description |
 |---|---|---|---|
@@ -272,17 +272,16 @@ Guests with `sk = "guest#active"` (own contact email as PK) are recognised as `r
 | `players` | — | Map | Map of `{email: {name: str}}` — permanent players only, on `playerStatus#*` items |
 | `guests` | — | List | Flat list of `{pk, sk, name, sponsorEmail, sponsorName}` objects — on `playerStatus#*` items |
 | `status` | — | String | `OPEN` / `CANCELLED` / `PLAYED` — only on `SK = gameStatus` items |
-| `createdAt` | — | String | ISO 8601 timestamp — only on `SK = gameStatus` items |
+| `createdAt` | — | String | ISO 8601 timestamp — on `SK = gameStatus` and `weekStatus` items |
 | `policy` | — | Map | The game's timing policy `{minPlayers, threshold, longGame:{startTime,durationHours}, shortGame:{startTime,durationHours}}` — only on `SK = gameStatus` items (a fixed game has equal tiers) |
+| `confirmAt` | — | String | The floored RSVP cutoff (ISO 8601) snapshotted at creation — only on `SK = gameStatus` items; the single display source read by the announce task and the guest follow-up |
 | `confirmedStartTime` | — | String | Start time frozen at the confirm step — only on `SK = gameStatus` items, set once the game is confirmed |
 | `confirmedDurationHours` | — | Number | Duration frozen at the confirm step — only on `SK = gameStatus` items, set once the game is confirmed |
-| `gameCount` | — | Number | Number of games scheduled this week — only on `SK = weekStatus` items |
-| `adminResponded` | — | Boolean | Whether the admin has responded for this week — only on `SK = weekStatus` items |
-| `reason` | — | String | `no_response` / `admin_declined` — only on `SK = weekStatus` items, when no games were scheduled |
+| `reason` | — | String | `no_response` / `admin_declined` — only on `SK = weekStatus` items; the sole persisted fact, recording a no-game decision |
 
 **Entity-prefixed partition key.** The `pk` attribute carries a `GAME#`/`WEEK#` token so a key announces its entity type rather than a bare date pretending every row is a game. The prefix is an internal storage detail confined to `common/dynamo.py` (built via `game_pk()`/`week_pk()`, stripped on read by `strip_pk()`); every other layer — handlers, Step Functions input, the `game-{date}` execution name, and email templates — works in bare ISO dates, and read functions still expose a bare `gameDate` field.
 
-`weekStatus` items live on the `WEEK#<Monday>` partition and are additive: `create_game()` atomically increments `gameCount` and sets `adminResponded = true` as part of the same `TransactWriteItems` call that creates the game's `gameStatus` + empty `playerStatus#*` items, so multiple games scheduled in a single admin reply never race on the counter. (The Monday-keyed week row is intentional — its `if_not_exists` upsert must accumulate `gameCount` across multiple games per week.)
+**Slim week model.** There is no stored game counter and no `adminResponded` flag. A week's game count is computed on demand by `count_games_in_week()`, which reads the week's seven dated game rows (Mon..Sun, `sk = gameStatus`) and counts those not `CANCELLED` — always accurate, and correctly treating a scheduled-then-cancelled week as empty. `create_game()` therefore writes no `weekStatus` row; a `weekStatus` row exists only when a no-game decision (`reason`) has been recorded, which keeps the Tuesday cutoff idempotent.
 
 ### Per-game policy
 
@@ -323,6 +322,7 @@ The `guests` array is a flat list across all sponsors. `pk`+`sk` uniquely identi
   "sk": "gameStatus",
   "status": "OPEN",
   "createdAt": "2026-03-29T09:00:00+00:00",
+  "confirmAt": "2026-07-31T05:00:00+00:00",
   "policy": {
     "minPlayers": 6,
     "threshold": 10,
@@ -332,16 +332,19 @@ The `guests` array is a flat list across all sponsors. `pk`+`sk` uniquely identi
 }
 ```
 
-After the confirm step the resolved tier is frozen onto this item as `confirmedStartTime` / `confirmedDurationHours`.
+`confirmAt` is the floored RSVP cutoff snapshotted at creation. After the confirm step the resolved tier is frozen onto this item as `confirmedStartTime` / `confirmedDurationHours`.
 
 ### Example `weekStatus` item
+
+Written only to record a no-game decision (no counter, no `adminResponded`):
 
 ```json
 {
   "pk": "WEEK#2026-06-22",
   "sk": "weekStatus",
-  "gameCount": 2,
-  "adminResponded": true
+  "reason": "admin_declined",
+  "createdAt": "2026-06-22T09:00:00+00:00",
+  "modifiedAt": "2026-06-22T09:00:00+00:00"
 }
 ```
 
@@ -355,8 +358,9 @@ After the confirm step the resolved tier is frozen onto this item as `confirmedS
 | Get all currently open games | Games | Scan with filter `sk = gameStatus AND status = OPEN` (each item exposes a bare `gameDate`) |
 | Get full roster (all responses) | Games | Query `PK = GAME#<gameDate>, SK begins_with playerStatus#` → returns 3 items |
 | Count confirmed (incl. guests) | Games | From roster: `len(YES.players) + len(YES.guests)` |
-| Get/set week status | Games | GetItem / UpdateItem `PK = WEEK#<Monday>, SK = weekStatus` |
-| Create game + bump week counter | Games | **TransactWriteItems**: 4 `Put`s (gameStatus incl. `policy` + empty YES/NO/MAYBE) + 1 `Update` (`if_not_exists` counter increment on weekStatus) |
+| Count live games in a week | Games | 7 `GetItem`s `PK = GAME#<Mon..Sun>, SK = gameStatus`, counting non-`CANCELLED` (`count_games_in_week`) |
+| Get/set week no-game decision | Games | GetItem / UpdateItem `PK = WEEK#<Monday>, SK = weekStatus` (`reason` only) |
+| Create game | Games | **TransactWriteItems**: 4 `Put`s (gameStatus incl. `policy`, `location`, `confirmAt` + empty YES/NO/MAYBE) — no weekStatus write |
 | Player changes response (YES → NO) | Games | **TransactWriteItems**: REMOVE from `playerStatus#YES.players.#email` + SET `playerStatus#NO.players.#email` |
 | Move guests on player decline | Games | Read YES guests, filter by `sponsorEmail`, write remaining back to YES, append to NO guests array |
 | Move confirmed guests (NO → YES) | Games | **TransactWriteItems**: filter NO guests by name+sponsor, write remaining to NO, append matches to YES |
