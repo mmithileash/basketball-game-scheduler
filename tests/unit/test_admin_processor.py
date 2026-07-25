@@ -729,6 +729,35 @@ def test_schedule_unparseable_start_time_holds_batch(mocker):
 
 
 @pytest.mark.unit
+def test_default_policy_unparseable_config_time_fails_loud(mocker):
+    """A config-default start time that can't be parsed is a deploy misconfig — fail loud,
+    not a batch-hold blaming the admin for a time they never supplied."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker, datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc))
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [{"date": "2026-08-01", "startTime": None, "durationHours": None}],
+    })
+    # A default policy whose tier start times are garbage (misconfigured env).
+    mocker.patch("admin_processor.handler.default_policy", return_value={
+        "minPlayers": 6, "threshold": 10,
+        "longGame": {"startTime": "not-a-time", "durationHours": 2},
+        "shortGame": {"startTime": "not-a-time", "durationHours": 1},
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday")
+
+    with pytest.raises(ValueError):
+        handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    mock_create.assert_not_called()
+    # No misleading "couldn't understand the start time 'None'" batch-hold email.
+    mock_send.assert_not_called()
+
+
+@pytest.mark.unit
 def test_schedule_stores_floored_confirm_at(mocker):
     """create_game receives the floored confirm_at snapshotted onto the record."""
     from common.date_utils import sfn_timestamps_for_game

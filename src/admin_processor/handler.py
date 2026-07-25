@@ -57,14 +57,14 @@ logger.setLevel(logging.INFO)
 
 
 def _resolve_location(
-    game_date: str, game_info: dict[str, Any], partials: list[str]
+    game_date: str, game_info: dict[str, Any], problems: list[str]
 ) -> dict[str, Any] | None:
     """Classify a game's venue: override, default, or partial.
 
     A custom venue is both-or-neither: the admin must supply both a name and a
     valid (http/https) map URL. Returns the {name, mapUrl} override when both are
     present, None to fall back to the configured default when neither is, and
-    appends to `partials` (holding the whole batch) when the pair is incomplete.
+    appends to `problems` (holding the whole batch) when the pair is incomplete.
     """
     name = game_info.get("location")
     map_url = game_info.get("mapUrl")
@@ -75,11 +75,11 @@ def _resolve_location(
     if not name and not map_url:
         return None
     if name:
-        partials.append(
+        problems.append(
             f"  - {game_date}: you named the venue '{name}' but didn't give a valid map link."
         )
     else:
-        partials.append(
+        problems.append(
             f"  - {game_date}: you gave a map link but didn't name the venue."
         )
     return None
@@ -132,7 +132,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # Any problem — incomplete spec, unparseable time, or a start under 48h
         # away — holds the WHOLE batch: nothing is scheduled and the admin resends
         # one clean command.
-        partials: list[str] = []
+        problems: list[str] = []
         plans: list[tuple[str, dict[str, Any], dict[str, Any] | None, dict[str, Any]]] = []
         for game_info in games_to_schedule:
             game_date = game_info.get("date")
@@ -155,30 +155,36 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             else:
                 missing = "duration" if has_time else "start time"
                 given = f"start time {start_time}" if has_time else f"duration {duration_hours}h"
-                partials.append(
+                problems.append(
                     f"  - {game_date}: you gave a {given} but no {missing}."
                 )
                 policy = None  # timing partial; batch already held
 
-            location = _resolve_location(game_date, game_info, partials)
+            location = _resolve_location(game_date, game_info, problems)
 
             if policy is None:
                 continue
 
-            # Compute the shared start once; an unparseable admin-supplied start
-            # time holds the batch with a clear ask to restate it.
-            try:
+            # Anchor the game's start (shared by the guard and the lifecycle). An
+            # unparseable ADMIN-supplied start time holds the batch with a clear ask
+            # to restate it; a config-default time (default policy — the admin gave
+            # no time) that fails to parse is a deploy misconfiguration and is left
+            # to fail loudly rather than blamed on the admin.
+            if has_time:
+                try:
+                    start = game_start(game_date, policy)
+                except ValueError:
+                    problems.append(
+                        f"  - {game_date}: I couldn't understand the start time "
+                        f"'{start_time}'. Please restate it, e.g. '7:00 PM'."
+                    )
+                    continue
+            else:
                 start = game_start(game_date, policy)
-            except ValueError:
-                partials.append(
-                    f"  - {game_date}: I couldn't understand the start time "
-                    f"'{start_time}'. Please restate it, e.g. '7:00 PM'."
-                )
-                continue
 
             # 48h viability guard: exactly 48h is allowed; anything closer is rejected.
             if start - now < _MIN_LEAD:
-                partials.append(
+                problems.append(
                     f"  - {game_date}: that start is less than 48 hours away, too soon "
                     f"to announce and confirm a game. Please pick a later date/time."
                 )
@@ -188,7 +194,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             plans.append((game_date, policy, location, timestamps))
 
         # Any problem holds the whole batch: create nothing, ask for a clean resend.
-        if partials:
+        if problems:
             send_email(
                 sender_email,
                 f"Re: {subject}",
@@ -196,7 +202,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "A game needs either no time at all (and I'll use the default tiers) "
                 "or both a start time and a duration, a custom venue needs both a name "
                 "and a map link, and every game must start at least 48 hours from now.\n\n"
-                + "\n".join(partials)
+                + "\n".join(problems)
                 + "\n\nNothing was scheduled. Please resend the complete command.",
             )
             return {"statusCode": 200, "body": "Batch held"}

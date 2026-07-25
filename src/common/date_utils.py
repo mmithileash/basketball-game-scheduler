@@ -41,14 +41,14 @@ def parse_start_time(value: str) -> time:
 
 
 # Adaptive lifecycle offsets. Each of announce/reminder/confirm slides on a
-# single shared parameter t between an ideal offset (the old 7d/4d/2d spacing)
-# and a compressed floor (48h/36h/24h) driven by the game's lead time.
+# single shared parameter t driven by the game's lead time L:
+#   t = clamp((L - 48h) / (7d - 48h), 0, 1)   # 0 at the 48h floor, 1 at 7d+
+# Announce shares this exact window by design — its floor IS the 48h lead floor
+# and its cap IS the 7d lead cap — so it collapses to "at creation" for any game
+# under a week out. Reminder and confirm slide over their own narrower ranges.
 _FLOOR_LEAD = timedelta(hours=48)
 _IDEAL_LEAD = timedelta(days=7)
-_LEAD_SPAN = _IDEAL_LEAD - _FLOOR_LEAD  # 120h
-
-_ANNOUNCE_FLOOR = timedelta(hours=48)
-_ANNOUNCE_SPAN = timedelta(days=7) - _ANNOUNCE_FLOOR   # 120h → 48h..7d
+_LEAD_SPAN = _IDEAL_LEAD - _FLOOR_LEAD                 # 120h → announce 48h..7d
 _REMINDER_FLOOR = timedelta(hours=36)
 _REMINDER_SPAN = timedelta(days=4) - _REMINDER_FLOOR   # 60h → 36h..4d
 _CONFIRM_FLOOR = timedelta(hours=24)
@@ -104,8 +104,11 @@ def sfn_timestamps_for_game(game_date: str, policy: dict, now: datetime) -> dict
     t = (lead - _FLOOR_LEAD) / _LEAD_SPAN
     t = max(0.0, min(1.0, t))
 
-    announce_at = start - (_ANNOUNCE_FLOOR + t * _ANNOUNCE_SPAN)
-    reminder_at = start - (_REMINDER_FLOOR + t * _REMINDER_SPAN)
+    # announce/reminder aren't deadlines, but float interpolation can leave
+    # sub-second noise in the ISO timestamps; trim to whole seconds for clean
+    # SFN input. confirm is the shown deadline, floored down to the whole hour.
+    announce_at = (start - (_FLOOR_LEAD + t * _LEAD_SPAN)).replace(microsecond=0)
+    reminder_at = (start - (_REMINDER_FLOOR + t * _REMINDER_SPAN)).replace(microsecond=0)
     confirm_at = start - (_CONFIRM_FLOOR + t * _CONFIRM_SPAN)
     confirm_at = confirm_at.replace(minute=0, second=0, microsecond=0)
 
