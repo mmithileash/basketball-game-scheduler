@@ -112,6 +112,20 @@ WaitForFinalize (finalize_at: the conservative max end across both tiers)
 
 The four timestamps (`announce_at`, `reminder_at`, `confirm_at`, `finalize_at`) are **adaptive**, computed once by `sfn_timestamps_for_game(game_date, policy, now)` and passed as the execution input by `admin_processor` when the game is created. Announce/reminder/confirm are anchored to the game's earliest-tier start and slide between a compressed floor (48h/36h/24h — same-week games) and an ideal cap (7d/4d/2d — far-out games) on a single lead-time parameter; the RSVP window and the confirm-notice-before-start are each always ≥24h. `confirm_at` is floored **down** to the whole hour (so the deadline shown to players is never later than the real roster freeze) and snapshotted onto the record as `confirmAt`. `finalize_at` is the maximum end across both tiers, so evening/past-midnight games aren't closed before they finish. A game under a week out announces effectively at creation (its first `Wait` elapses immediately).
 
+#### Worked example — how the lifecycle adapts to reply time
+
+The same game (**Sat 2026-08-01, 10:00, 2h**, all times UTC) scheduled at different lead times `L`. The lead-time parameter is `t = clamp((L − 48h) / (7d − 48h), 0, 1)`; announce/reminder/confirm slide from their floor (`t=0`) to their cap (`t=1`). The last row shows a future-week game (scheduled the same Monday but two weeks out), which saturates at `t=1` and gets the full 7d/4d/2d spacing.
+
+| Admin replies | `L` | `t` | announce_at | reminder_at | confirm_at (floored) | finalize_at |
+|---|---|---|---|---|---|---|
+| Thu Jul 30, 10:00 (48h floor) | 48h | 0.0 | Thu Jul 30, 10:00 (at creation) | Thu Jul 30, 22:00 | Fri Jul 31, 10:00 | Sat Aug 1, 12:00 |
+| Wed Jul 29, 10:00 | 72h | 0.2 | Wed Jul 29, 10:00 (at creation) | Thu Jul 30, 10:00 | Fri Jul 31, 05:00 | Sat Aug 1, 12:00 |
+| Tue Jul 28, 10:00 | 96h | 0.4 | Tue Jul 28, 10:00 (at creation) | Wed Jul 29, 22:00 | Fri Jul 31, 00:00 | Sat Aug 1, 12:00 |
+| Mon Jul 27, 10:00 | 120h | 0.6 | Mon Jul 27, 10:00 (at creation) | Wed Jul 29, 10:00 | Thu Jul 30, 19:00 | Sat Aug 1, 12:00 |
+| Mon Jul 27, 10:00 — **game Aug 15** | 19d | 1.0 | Sat Aug 8, 10:00 (7d cap) | Tue Aug 11, 10:00 (4d) | Thu Aug 13, 10:00 (2d) | Sat Aug 15, 12:00 |
+
+Reading the table: a same-week game (top four rows) announces the moment it's created — the announce `Wait` has already elapsed — and its confirm cutoff floors down to a clean whole hour (e.g. `05:12 → 05:00`), always leaving ≥24h before the 10:00 kickoff. A game booked well ahead (bottom row) instead gets the generous 7d/4d/2d cadence so players don't forget it. Every row keeps the two invariants: announce → confirm (the RSVP window) and confirm → start (the go/no-go notice) are each ≥24h.
+
 ### Stage 1 — `announce_task` (at `announce_at`)
 
 If the game is `OPEN`, sends a tentative announcement rendered from the game's `policy` to every active player — two turnout branches (short vs long tier) when the policy is tiered, or a single fixed line when both tiers are equal — and shows the game's floored RSVP cutoff (read from the record's `confirmAt`) as a clean date+time. Returns `game_open: false` without action if the game is not `OPEN`.
