@@ -1,5 +1,8 @@
+from datetime import date
+
 import pytest
 
+from common.date_utils import week_start_for_date
 from weekly_scheduler.handler import handler
 
 
@@ -7,9 +10,14 @@ def _make_event():
     return {}
 
 
+def _current_week():
+    return week_start_for_date(date.today()).isoformat()
+
+
 @pytest.mark.unit
-def test_prompt_sent_when_no_week_status(mocker):
-    """When no weekStatus exists for next week, prompt is sent to all active admins."""
+def test_prompt_sent_when_week_below_floor(mocker):
+    """When the week has fewer games than the floor and no decline, prompt all admins."""
+    mocker.patch("weekly_scheduler.handler.count_games_in_week", return_value=0)
     mocker.patch("weekly_scheduler.handler.get_week_status", return_value=None)
     mocker.patch(
         "weekly_scheduler.handler.get_active_admins",
@@ -23,16 +31,26 @@ def test_prompt_sent_when_no_week_status(mocker):
     assert result["body"]["action"] == "prompt_sent"
     mock_prompt.assert_called_once()
     _, week_start = mock_prompt.call_args[0]
-    assert week_start is not None
+    assert week_start == _current_week()  # targets the CURRENT week, not next
 
 
 @pytest.mark.unit
-def test_prompt_suppressed_when_game_count_at_max(mocker):
-    """When week already has max games scheduled, no prompt is sent."""
-    mocker.patch(
-        "weekly_scheduler.handler.get_week_status",
-        return_value={"gameCount": 1, "adminResponded": True},
-    )
+def test_prompt_targets_current_week(mocker):
+    """The prompted week is the week containing today."""
+    mocker.patch("weekly_scheduler.handler.count_games_in_week", return_value=0)
+    mocker.patch("weekly_scheduler.handler.get_week_status", return_value=None)
+    mocker.patch("weekly_scheduler.handler.get_active_admins", return_value=[])
+
+    result = handler(_make_event(), None)
+
+    assert result["body"]["weekStart"] == _current_week()
+
+
+@pytest.mark.unit
+def test_prompt_suppressed_when_week_at_floor(mocker):
+    """When the week already has at least the floor number of games, no prompt is sent."""
+    mocker.patch("weekly_scheduler.handler.count_games_in_week", return_value=1)
+    mock_status = mocker.patch("weekly_scheduler.handler.get_week_status")
     mock_prompt = mocker.patch("weekly_scheduler.handler.send_admin_weekly_prompt")
 
     result = handler(_make_event(), None)
@@ -42,11 +60,12 @@ def test_prompt_suppressed_when_game_count_at_max(mocker):
 
 
 @pytest.mark.unit
-def test_prompt_suppressed_when_admin_already_responded(mocker):
-    """When admin already responded (but gameCount < max), no prompt is sent."""
+def test_prompt_suppressed_when_week_declined(mocker):
+    """When a no-game decision is recorded, no prompt is sent even with zero games."""
+    mocker.patch("weekly_scheduler.handler.count_games_in_week", return_value=0)
     mocker.patch(
         "weekly_scheduler.handler.get_week_status",
-        return_value={"gameCount": 0, "adminResponded": True},
+        return_value={"reason": "admin_declined"},
     )
     mock_prompt = mocker.patch("weekly_scheduler.handler.send_admin_weekly_prompt")
 
@@ -58,7 +77,7 @@ def test_prompt_suppressed_when_admin_already_responded(mocker):
 
 @pytest.mark.unit
 def test_prompt_sent_to_multiple_admins(mocker):
-    """Prompt is sent to every active admin."""
+    mocker.patch("weekly_scheduler.handler.count_games_in_week", return_value=0)
     mocker.patch("weekly_scheduler.handler.get_week_status", return_value=None)
     mocker.patch(
         "weekly_scheduler.handler.get_active_admins",
@@ -77,7 +96,7 @@ def test_prompt_sent_to_multiple_admins(mocker):
 
 @pytest.mark.unit
 def test_prompt_continues_if_one_send_fails(mocker):
-    """A single failed email send does not abort prompting other admins."""
+    mocker.patch("weekly_scheduler.handler.count_games_in_week", return_value=0)
     mocker.patch("weekly_scheduler.handler.get_week_status", return_value=None)
     mocker.patch(
         "weekly_scheduler.handler.get_active_admins",

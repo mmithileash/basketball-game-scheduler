@@ -10,6 +10,7 @@ from common.date_utils import week_start_for_date
 from common.dynamo import (
     add_guests_to_game_status,
     add_player,
+    count_games_in_week,
     create_game,
     game_pk,
     week_pk,
@@ -185,15 +186,14 @@ def test_create_game_stamps_created_and_modified_on_every_item(sample_game_date)
 
 @pytest.mark.unit
 @mock_aws
-def test_create_game_stamps_week_status_row(sample_game_date):
-    """The weekStatus upsert row also carries createdAt and modifiedAt."""
+def test_set_week_no_game_stamps_created_and_modified():
+    """The no-game decision row carries createdAt and modifiedAt."""
     _reset_dynamo_caches()
-    dynamodb = _create_tables()
+    _create_tables()
 
-    create_game(sample_game_date)
+    set_week_no_game("2026-03-23", "admin_declined")
 
-    week_start = week_start_for_date(date.fromisoformat(sample_game_date)).isoformat()
-    item = get_week_status(week_start)
+    item = get_week_status("2026-03-23")
     assert item["createdAt"]
     assert item["modifiedAt"]
 
@@ -982,31 +982,64 @@ def test_remove_guest_from_status_not_found(sample_game_date):
 
 @pytest.mark.unit
 @mock_aws
-def test_create_game_increments_week_game_count(sample_game_date):
-    """create_game atomically creates weekStatus item with gameCount=1."""
+def test_create_game_does_not_write_week_row(sample_game_date):
+    """The slim week model no longer stores a gameCount; create writes no week row."""
     _create_tables()
     _reset_dynamo_caches()
 
     create_game(sample_game_date)  # 2026-03-28 → week 2026-03-23
 
-    week_status = get_week_status("2026-03-23")
-    assert week_status is not None
-    assert int(week_status["gameCount"]) == 1
-    assert week_status["adminResponded"] is True
+    # The week's game count is computed from live game rows, not a stored counter.
+    assert get_week_status("2026-03-23") is None
 
 
 @pytest.mark.unit
 @mock_aws
-def test_create_game_twice_increments_game_count():
-    """Creating two games in the same week increments gameCount to 2."""
+def test_count_games_in_week_counts_live_games():
+    """count_games_in_week counts the week's non-cancelled game rows."""
     _create_tables()
     _reset_dynamo_caches()
 
     create_game("2026-03-24")  # Tuesday — week 2026-03-23
     create_game("2026-03-28")  # Saturday — same week
 
-    week_status = get_week_status("2026-03-23")
-    assert int(week_status["gameCount"]) == 2
+    assert count_games_in_week("2026-03-23") == 2
+
+
+@pytest.mark.unit
+@mock_aws
+def test_count_games_in_week_excludes_cancelled():
+    """A scheduled-then-cancelled game does not count toward the week's total."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game("2026-03-24")  # Tuesday
+    create_game("2026-03-28")  # Saturday
+    update_game_status("2026-03-28", "CANCELLED")
+
+    assert count_games_in_week("2026-03-23") == 1
+
+
+@pytest.mark.unit
+@mock_aws
+def test_count_games_in_week_zero_when_empty():
+    _create_tables()
+    _reset_dynamo_caches()
+
+    assert count_games_in_week("2026-03-23") == 0
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stores_confirm_at(sample_game_date):
+    """The floored confirmation cutoff is snapshotted onto the game record."""
+    _create_tables()
+    _reset_dynamo_caches()
+
+    create_game(sample_game_date, confirm_at="2026-03-26T19:00:00+00:00")
+
+    game = get_game_status(sample_game_date)
+    assert game["confirmAt"] == "2026-03-26T19:00:00+00:00"
 
 
 @pytest.mark.unit
@@ -1020,7 +1053,7 @@ def test_get_week_status_returns_none_when_missing():
 
 @pytest.mark.unit
 @mock_aws
-def test_set_week_no_game_sets_responded_and_reason():
+def test_set_week_no_game_records_reason():
     _create_tables()
     _reset_dynamo_caches()
 
@@ -1028,7 +1061,6 @@ def test_set_week_no_game_sets_responded_and_reason():
 
     week_status = get_week_status("2026-03-23")
     assert week_status is not None
-    assert week_status["adminResponded"] is True
     assert week_status["reason"] == "no_response"
 
 

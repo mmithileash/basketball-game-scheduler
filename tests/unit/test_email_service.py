@@ -175,6 +175,25 @@ def test_send_guest_followup_with_mocker(mocker):
 
 @pytest.mark.unit
 @mock_aws
+def test_send_guest_followup_uses_stored_cutoff(mocker):
+    """The follow-up references the game's actual floored cutoff, not a hardcoded day."""
+    _setup_ses()
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_guest_followup(
+        sponsor_email="alice@example.com",
+        sponsor_name="Alice",
+        guest_names=["John"],
+        game_date="2026-08-01",
+        cutoff="2026-07-31T17:00:00+00:00",
+    )
+    body = mock_send.call_args[0][2]
+    assert "31 July 2026" in body
+    assert "5:00 PM" in body
+    assert "Friday's cutoff" not in body
+
+
+@pytest.mark.unit
+@mock_aws
 def test_send_guest_followup_without_name(mocker):
     """Verify generic greeting when sponsor name is None."""
     _setup_ses()
@@ -450,6 +469,29 @@ def test_send_no_game_this_week_admin_declined(mocker):
     _, _, body = mock_send.call_args[0]
     assert "organiser has confirmed" in body
     assert "Hi None" not in body
+
+
+@pytest.mark.unit
+def test_send_tentative_announcement_shows_exact_cutoff_when_known(mocker):
+    """When the game's floored cutoff is supplied it renders as a clean deadline."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement(
+        "player@example.com", "Alice", "2026-08-01", _TIERED_POLICY,
+        cutoff="2026-07-31T17:00:00+00:00",
+    )
+    _, _, body = mock_send.call_args[0]
+    assert "RSVP by" in body
+    assert "31 July 2026" in body
+    assert "5:00 PM" in body
+
+
+@pytest.mark.unit
+def test_send_tentative_announcement_omits_cutoff_line_when_absent(mocker):
+    """With no cutoff supplied the announcement shows no RSVP-by line."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _TIERED_POLICY)
+    _, _, body = mock_send.call_args[0]
+    assert "RSVP by" not in body
 
 
 @pytest.mark.unit

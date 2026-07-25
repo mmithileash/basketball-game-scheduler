@@ -1,7 +1,7 @@
 import html
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import boto3
@@ -211,10 +211,24 @@ def send_guest_followup(
     sponsor_name: str | None,
     guest_names: list[str],
     game_date: str,
+    cutoff: str | None = None,
 ) -> None:
-    """Ask the sponsor whether their guests are still attending after they declined."""
+    """Ask the sponsor whether their guests are still attending after they declined.
+
+    The deadline references the game's actual (stored, floored) confirmation
+    cutoff when known, rather than a hardcoded day.
+    """
     greeting = f"Hi {sponsor_name}" if sponsor_name else "Hi"
     guest_list = ", ".join(guest_names)
+
+    pretty_cutoff = _pretty_cutoff(cutoff)
+    if pretty_cutoff:
+        deadline_line = (
+            f"If no reply is received before the cutoff ({pretty_cutoff}), "
+            f"we'll assume they won't attend.\n"
+        )
+    else:
+        deadline_line = "If no reply is received before the cutoff, we'll assume they won't attend.\n"
 
     subject = f"Your guests for the basketball game on {game_date}"
     body = (
@@ -224,7 +238,7 @@ def send_guest_followup(
         f"Are any of them still planning to attend?\n\n"
         f"Please reply with the names of guests who are still coming, and optionally "
         f"a contact email for each (e.g. 'John - john@example.com, Jane').\n\n"
-        f"If no reply is received before Friday's cutoff, we'll assume they won't attend.\n"
+        f"{deadline_line}"
     )
 
     send_email(sponsor_email, subject, body + _unsubscribe_footer())
@@ -374,19 +388,38 @@ def _pretty_date(game_date: str) -> str:
         return game_date
 
 
+def _pretty_cutoff(cutoff: str | None) -> str | None:
+    """Render the stored, floored confirmation cutoff as a clean date and time.
+
+    The cutoff is already floored to the top of the hour, so it reads cleanly
+    (e.g. 'Friday, 31 July 2026 at 5:00 PM'). Returns None when there is no
+    cutoff or it can't be parsed, so callers can fall back to generic wording.
+    """
+    if not cutoff:
+        return None
+    try:
+        dt = datetime.fromisoformat(cutoff)
+    except ValueError:
+        return None
+    hour = dt.strftime("%I").lstrip("0") or "12"  # 12-hour clock, no leading zero
+    return dt.strftime(f"%A, %d %B %Y at {hour}:%M %p")
+
+
 def send_tentative_announcement(
     player_email: str,
     player_name: str | None,
     game_date: str,
     policy: dict[str, Any],
     location: dict[str, Any] | None = None,
+    cutoff: str | None = None,
 ) -> None:
     """Send game announcement driven by the game's policy.
 
     When the two tiers differ the email shows both turnout-dependent branches
     with concrete times; when they are equal it shows a single time line. The
     venue comes from the game's snapshotted `location`, falling back to the
-    configured default when none is supplied.
+    configured default when none is supplied. When the game's stored, floored
+    RSVP cutoff is known it is shown as a clean, exact deadline.
     """
     from common.policy import is_fixed
 
@@ -410,6 +443,9 @@ def send_tentative_announcement(
             f"for {_duration_label(int(short_game['durationHours']))}\n"
         )
 
+    pretty_cutoff = _pretty_cutoff(cutoff)
+    cutoff_line = f"  RSVP by:   {pretty_cutoff}\n" if pretty_cutoff else ""
+
     body = (
         f"{greeting},\n\n"
         f"🏀  A basketball game has been scheduled!\n\n"
@@ -418,7 +454,8 @@ def send_tentative_announcement(
         f"{_DIVIDER}\n"
         f"  Date:      {_pretty_date(game_date)}\n"
         f"{timing}"
-        f"  Location:  {_location_display(location)}\n\n"
+        f"  Location:  {_location_display(location)}\n"
+        f"{cutoff_line}\n"
         f"  We need at least {policy['minPlayers']} players to play.\n\n"
         f"{_DIVIDER}\n"
         f"HOW TO RESPOND\n"

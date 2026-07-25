@@ -1,14 +1,14 @@
 import json
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import boto3
 
 from common.bedrock_client import parse_admin_email
 from common.config import load_config
-from common.date_utils import sfn_timestamps_for_game, week_start_for_date
+from common.date_utils import game_start, sfn_timestamps_for_game, week_start_for_date
 from common.policy import default_policy, fixed_policy
 from common.dynamo import (
     add_player,
@@ -39,6 +39,18 @@ def _get_sfn_client():
     if _sfn_client is None:
         _sfn_client = boto3.client("stepfunctions")
     return _sfn_client
+
+
+# One shared "now" for the guard and the lifecycle timestamps, so there's no
+# clock skew between "passed the 48h guard" and "computed the waits". A helper
+# (not an inline datetime.now) so tests can pin the instant.
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# A game must start at least this far from "now" to have room for a real
+# announce-and-confirm cycle. Exactly 48h is allowed (t=0, announce at creation).
+_MIN_LEAD = timedelta(hours=48)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -113,11 +125,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return {"statusCode": 200, "body": "No games parsed"}
 
         config = load_config()
+        now = _now()
 
         # Classify each game by how many of (start time, duration) the admin gave,
-        # and likewise resolve its venue (both name and map URL, or neither).
+        # resolve its venue, and validate its timing against the shared "now".
+        # Any problem — incomplete spec, unparseable time, or a start under 48h
+        # away — holds the WHOLE batch: nothing is scheduled and the admin resends
+        # one clean command.
         partials: list[str] = []
-        plans: list[tuple[str, dict[str, Any], dict[str, Any] | None]] = []
+        plans: list[tuple[str, dict[str, Any], dict[str, Any] | None, dict[str, Any]]] = []
         for game_info in games_to_schedule:
             game_date = game_info.get("date")
             if not game_date:
@@ -146,53 +162,79 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
             location = _resolve_location(game_date, game_info, partials)
 
-            if policy is not None:
-                plans.append((game_date, policy, location))
+            if policy is None:
+                continue
 
-        # Any partial spec holds the whole batch: create nothing, ask for a clean resend.
+            # Compute the shared start once; an unparseable admin-supplied start
+            # time holds the batch with a clear ask to restate it.
+            try:
+                start = game_start(game_date, policy)
+            except ValueError:
+                partials.append(
+                    f"  - {game_date}: I couldn't understand the start time "
+                    f"'{start_time}'. Please restate it, e.g. '7:00 PM'."
+                )
+                continue
+
+            # 48h viability guard: exactly 48h is allowed; anything closer is rejected.
+            if start - now < _MIN_LEAD:
+                partials.append(
+                    f"  - {game_date}: that start is less than 48 hours away, too soon "
+                    f"to announce and confirm a game. Please pick a later date/time."
+                )
+                continue
+
+            timestamps = sfn_timestamps_for_game(game_date, policy, now)
+            plans.append((game_date, policy, location, timestamps))
+
+        # Any problem holds the whole batch: create nothing, ask for a clean resend.
         if partials:
             send_email(
                 sender_email,
                 f"Re: {subject}",
-                "I couldn't schedule your games because some were incomplete. "
+                "I couldn't schedule your games because some couldn't be set up. "
                 "A game needs either no time at all (and I'll use the default tiers) "
-                "or both a start time and a duration, and a custom venue needs both "
-                "a name and a map link.\n\n"
+                "or both a start time and a duration, a custom venue needs both a name "
+                "and a map link, and every game must start at least 48 hours from now.\n\n"
                 + "\n".join(partials)
                 + "\n\nNothing was scheduled. Please resend the complete command.",
             )
-            return {"statusCode": 200, "body": "Partial spec, batch held"}
+            return {"statusCode": 200, "body": "Batch held"}
 
         sfn_arn = os.environ.get("GAME_LIFECYCLE_SFN_ARN")
         sfn = _get_sfn_client() if sfn_arn else None
         scheduled: list[str] = []
+        announce_lines: list[str] = []
 
-        for game_date, policy, location in plans:
-            create_game(game_date, policy, location=location)
+        for game_date, policy, location, timestamps in plans:
+            create_game(game_date, policy, location=location, confirm_at=timestamps["confirm_at"])
             if sfn and sfn_arn:
-                execution_input = sfn_timestamps_for_game(game_date)
                 try:
                     sfn.start_execution(
                         stateMachineArn=sfn_arn,
                         name=f"game-{game_date}",
-                        input=json.dumps(execution_input),
+                        input=json.dumps(timestamps),
                     )
                     logger.info(f"Started SFN execution game-{game_date}")
                 except sfn.exceptions.ExecutionAlreadyExists:
                     logger.info(f"SFN execution game-{game_date} already exists, skipping")
             scheduled.append(game_date)
+            announce_date = datetime.fromisoformat(timestamps["announce_at"]).date().isoformat()
+            announce_lines.append(f"  - {game_date}: players are told on {announce_date}")
             logger.info(f"Scheduled game for {game_date}")
 
         send_email(
             sender_email,
             f"Re: {subject}",
-            f"Done. Scheduled {len(scheduled)} game(s): {', '.join(scheduled)}. "
-            f"Players will be notified 7 days before each game.",
+            f"Done. Scheduled {len(scheduled)} game(s): {', '.join(scheduled)}.\n\n"
+            f"Each game's announcement goes out on the date shown below:\n"
+            + "\n".join(announce_lines)
+            + "\n",
         )
 
     elif intent == "NO_GAMES_THIS_WEEK":
         today = date.today()
-        week_start_str = week_start_for_date(today + timedelta(days=7)).isoformat()
+        week_start_str = week_start_for_date(today).isoformat()
         set_week_no_game(week_start_str, "admin_declined")
 
         players = get_active_players()

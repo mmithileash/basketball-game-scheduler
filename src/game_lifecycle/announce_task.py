@@ -19,6 +19,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     policy = game["policy"]
     location = game.get("location")
+    cutoff = game.get("confirmAt")
     players = get_active_players()
     for player in players:
         try:
@@ -28,6 +29,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 game_date,
                 policy,
                 location=location,
+                cutoff=cutoff,
             )
         except Exception:
             logger.error(f"Failed to send announcement to {player['email']}", exc_info=True)

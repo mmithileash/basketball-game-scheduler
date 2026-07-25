@@ -1,6 +1,16 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from admin_processor.handler import handler
+
+# A fixed "now" well before the July 2026 game dates used across the scheduling
+# tests, so those games clear the 48-hour viability guard deterministically.
+_FIXED_NOW = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
+
+
+def _patch_now(mocker, now=_FIXED_NOW):
+    return mocker.patch("admin_processor.handler._now", return_value=now)
 
 
 def _make_s3_event(bucket: str, key: str) -> dict:
@@ -302,6 +312,7 @@ def test_cancel_game_broadcast_includes_unsubscribe_for_players_not_guests(mocke
 def test_schedule_games_unspecified_creates_default_two_tier_policy(mocker):
     """A game with neither time nor duration seeds a default (non-fixed) policy."""
     mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
     mocker.patch("admin_processor.handler.parse_admin_email", return_value={
         "intent": "SCHEDULE_GAMES",
         "game_date": None,
@@ -339,6 +350,7 @@ def test_schedule_games_unspecified_creates_default_two_tier_policy(mocker):
 def test_schedule_games_fully_specified_creates_fixed_policy(mocker):
     """A game with both time and duration seeds a fixed policy (equal tiers)."""
     mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
     mocker.patch("admin_processor.handler.parse_admin_email", return_value={
         "intent": "SCHEDULE_GAMES",
         "game_date": None,
@@ -406,6 +418,7 @@ def test_schedule_games_partial_holds_whole_batch(mocker):
 def test_schedule_games_without_location_defaults(mocker):
     """A game with no venue details is created with location=None (config default)."""
     mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
     mocker.patch("admin_processor.handler.parse_admin_email", return_value={
         "intent": "SCHEDULE_GAMES",
         "game_date": None, "email": None, "name": None, "is_admin": None,
@@ -430,6 +443,7 @@ def test_schedule_games_without_location_defaults(mocker):
 def test_schedule_games_with_location_override_snapshots_it(mocker):
     """A venue name plus a valid map URL is snapshotted as the game's location."""
     mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
     mocker.patch("admin_processor.handler.parse_admin_email", return_value={
         "intent": "SCHEDULE_GAMES",
         "game_date": None, "email": None, "name": None, "is_admin": None,
@@ -490,6 +504,7 @@ def test_schedule_games_partial_location_holds_whole_batch(mocker, location, map
 def test_schedule_games_sfn_already_exists_is_noop(mocker):
     """ExecutionAlreadyExists during start_execution is silently ignored."""
     mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
     mocker.patch("admin_processor.handler.parse_admin_email", return_value={
         "intent": "SCHEDULE_GAMES",
         "game_date": None,
@@ -628,3 +643,138 @@ def test_cancel_game_sfn_not_found_is_ignored(mocker):
     result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
 
     assert result["statusCode"] == 200
+
+
+# ---------------------------------------------------------------------------
+# 48h viability guard + shared now (Unit 5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_schedule_game_too_soon_holds_whole_batch(mocker):
+    """A game starting under 48h from now holds the whole batch — nothing scheduled."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker, datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc))
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-08-15", "startTime": None, "durationHours": None},
+            {"date": "2026-07-26", "startTime": None, "durationHours": None},  # 24h away
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday and tomorrow")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "2026-07-26" in body
+    assert "48" in body
+
+
+@pytest.mark.unit
+def test_schedule_game_exactly_48h_is_allowed(mocker):
+    """A game starting exactly 48h away passes the guard and is scheduled."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker, datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc))
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        # default policy earliest tier is 10:00; 2026-07-27 10:00 is exactly 48h out
+        "games": [{"date": "2026-07-27", "startTime": None, "durationHours": None}],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Monday")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+
+
+@pytest.mark.unit
+def test_schedule_unparseable_start_time_holds_batch(mocker):
+    """An admin-supplied start time the parser can't read holds the whole batch."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker, datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc))
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [{"date": "2026-08-01", "startTime": "quarter to tea", "durationHours": 2}],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday at quarter to tea")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "2026-08-01" in body
+    assert "start time" in body.lower()
+
+
+@pytest.mark.unit
+def test_schedule_stores_floored_confirm_at(mocker):
+    """create_game receives the floored confirm_at snapshotted onto the record."""
+    from common.date_utils import sfn_timestamps_for_game
+    from common.policy import default_policy
+    from common.config import load_config
+
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    now = datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc)
+    _patch_now(mocker, now)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [{"date": "2026-08-01", "startTime": None, "durationHours": None}],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday")
+
+    handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    expected = sfn_timestamps_for_game("2026-08-01", default_policy(load_config()), now)
+    confirm_at = mock_create.call_args.kwargs["confirm_at"]
+    assert confirm_at == expected["confirm_at"]
+    # floored to the top of the hour
+    assert confirm_at.endswith(":00:00+00:00")
+
+
+@pytest.mark.unit
+def test_confirmation_states_announce_date_and_drops_seven_days(mocker):
+    """The admin confirmation names the exact announce date and no longer claims '7 days'."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker, datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc))
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        # far-out game → announce caps at 7 days before = 2026-08-08
+        "games": [{"date": "2026-08-15", "startTime": None, "durationHours": None}],
+    })
+    mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday week after next")
+
+    handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    body = mock_send.call_args[0][2]
+    assert "2026-08-08" in body       # exact announce date
+    assert "7 day" not in body.lower()  # false "7 days before" claim dropped

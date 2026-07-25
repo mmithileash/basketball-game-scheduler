@@ -68,8 +68,8 @@ variable "short_game_duration_hours" {
   default     = 1
 }
 
-variable "max_games_per_week" {
-  description = "Maximum games per week before the Monday admin prompt is suppressed"
+variable "min_games_per_week" {
+  description = "Target games per week (a floor): the Monday admin prompt fires while the week has fewer than this many live games"
   type        = number
   default     = 1
 }

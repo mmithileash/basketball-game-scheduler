@@ -6,7 +6,6 @@ import boto3
 from boto3.dynamodb.conditions import Key
 
 from common.config import load_config
-from common.date_utils import week_start_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -128,19 +127,25 @@ def create_game(
     game_date: str,
     policy: dict[str, Any] | None = None,
     location: dict[str, Any] | None = None,
+    confirm_at: str | None = None,
 ) -> None:
-    """Create a new game with status OPEN and atomically increment the week's gameCount.
+    """Create a new game with status OPEN.
 
     The game's policy and location are stored as maps on the gameStatus item.
     When no policy is supplied, a default two-tier policy is seeded from
     configuration so the policy block is always present. Likewise, when no
     location is supplied, the configured default venue name and map URL are
-    snapshotted onto the record so the game is always self-describing.
+    snapshotted onto the record so the game is always self-describing. The
+    floored confirmation cutoff (``confirm_at``) is snapshotted alongside as the
+    single authoritative display source for the game's RSVP deadline.
+
+    No weekStatus row is written: the number of games in a week is computed from
+    that week's live game rows (see ``count_games_in_week``), which is
+    authoritative and correctly reflects cancellations.
     """
     config = _get_config()
     client = _get_client()
     now = _now()
-    week_start = week_start_for_date(date.fromisoformat(game_date)).isoformat()
 
     if policy is None:
         from common.policy import default_policy
@@ -149,22 +154,22 @@ def create_game(
     if location is None:
         location = {"name": config.default_game_location, "mapUrl": config.default_game_map_url}
 
+    game_status_item = {
+        "pk": {"S": game_pk(game_date)},
+        "sk": {"S": "gameStatus"},
+        "status": {"S": "OPEN"},
+        "policy": _to_ddb_attr(policy),
+        "location": _to_ddb_attr(location),
+        "createdAt": {"S": now},
+        "modifiedAt": {"S": now},
+    }
+    if confirm_at is not None:
+        game_status_item["confirmAt"] = {"S": confirm_at}
+
     pk = game_pk(game_date)
     ts = {"createdAt": {"S": now}, "modifiedAt": {"S": now}}
     client.transact_write_items(TransactItems=[
-        {
-            "Put": {
-                "TableName": config.games_table,
-                "Item": {
-                    "pk": {"S": pk},
-                    "sk": {"S": "gameStatus"},
-                    "status": {"S": "OPEN"},
-                    "policy": _to_ddb_attr(policy),
-                    "location": _to_ddb_attr(location),
-                    **ts,
-                },
-            }
-        },
+        {"Put": {"TableName": config.games_table, "Item": game_status_item}},
         {
             "Put": {
                 "TableName": config.games_table,
@@ -201,26 +206,29 @@ def create_game(
                 },
             }
         },
-        {
-            "Update": {
-                "TableName": config.games_table,
-                "Key": {"pk": {"S": week_pk(week_start)}, "sk": {"S": "weekStatus"}},
-                "UpdateExpression": (
-                    "SET gameCount = if_not_exists(gameCount, :zero) + :one, "
-                    "adminResponded = :true, "
-                    "createdAt = if_not_exists(createdAt, :now), "
-                    "modifiedAt = :now"
-                ),
-                "ExpressionAttributeValues": {
-                    ":zero": {"N": "0"},
-                    ":one": {"N": "1"},
-                    ":true": {"BOOL": True},
-                    ":now": {"S": now},
-                },
-            }
-        },
     ])
-    logger.info("Created game for %s (week: %s)", game_date, week_start)
+    logger.info("Created game for %s", game_date)
+
+
+def count_games_in_week(week_start_date: str) -> int:
+    """Count the live (non-cancelled) games scheduled in a week.
+
+    Reads the seven dated game rows (Mon..Sun) for the week and counts those
+    whose gameStatus exists and is not CANCELLED. This is authoritative — it
+    always reflects cancellations — and needs no scan, GSI, or stored counter.
+    """
+    config = _get_config()
+    table = _get_resource().Table(config.games_table)
+
+    monday = date.fromisoformat(week_start_date)
+    count = 0
+    for offset in range(7):
+        day = (monday + timedelta(days=offset)).isoformat()
+        item = table.get_item(Key={"pk": game_pk(day), "sk": "gameStatus"}).get("Item")
+        if item and item.get("status") != "CANCELLED":
+            count += 1
+    logger.info("Week %s has %d live game(s)", week_start_date, count)
+    return count
 
 
 def get_game_status(game_date: str) -> dict[str, Any] | None:
@@ -835,17 +843,21 @@ def get_week_status(week_start_date: str) -> dict[str, Any] | None:
 
 
 def set_week_no_game(week_start_date: str, reason: str) -> None:
-    """Mark a week as no-game (reason: 'no_response' or 'admin_declined')."""
+    """Record a week's no-game decision (reason: 'no_response' or 'admin_declined').
+
+    This is the only fact the slim week row persists — it is not derivable from
+    game rows and keeps the Tuesday cutoff idempotent.
+    """
     config = _get_config()
     table = _get_resource().Table(config.games_table)
     table.update_item(
         Key={"pk": week_pk(week_start_date), "sk": "weekStatus"},
         UpdateExpression=(
-            "SET adminResponded = :true, #reason = :reason, "
+            "SET #reason = :reason, "
             "createdAt = if_not_exists(createdAt, :now), modifiedAt = :now"
         ),
         ExpressionAttributeNames={"#reason": "reason"},
-        ExpressionAttributeValues={":true": True, ":reason": reason, ":now": _now()},
+        ExpressionAttributeValues={":reason": reason, ":now": _now()},
     )
     logger.info(f"Week {week_start_date} marked no-game: {reason}")
 
