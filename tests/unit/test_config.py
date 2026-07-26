@@ -34,3 +34,16 @@ def test_config_tier_seeds_have_defaults():
 def test_config_no_longer_has_game_time():
     fields = {f.name for f in dataclasses.fields(load_config())}
     assert "game_time" not in fields
+
+
+@pytest.mark.unit
+def test_config_default_hourly_cost_defaults_to_45():
+    config = load_config()
+    assert config.default_game_hourly_cost == 45
+
+
+@pytest.mark.unit
+def test_config_default_hourly_cost_reads_env_and_allows_decimals(monkeypatch):
+    monkeypatch.setenv("DEFAULT_GAME_HOURLY_COST", "42.50")
+    config = load_config()
+    assert config.default_game_hourly_cost == 42.5

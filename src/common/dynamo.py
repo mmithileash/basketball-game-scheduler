@@ -128,6 +128,7 @@ def create_game(
     policy: dict[str, Any] | None = None,
     location: dict[str, Any] | None = None,
     confirm_at: str | None = None,
+    hourly_rate: float | None = None,
 ) -> None:
     """Create a new game with status OPEN.
 
@@ -135,9 +136,12 @@ def create_game(
     When no policy is supplied, a default two-tier policy is seeded from
     configuration so the policy block is always present. Likewise, when no
     location is supplied, the configured default venue name and map URL are
-    snapshotted onto the record so the game is always self-describing. The
-    floored confirmation cutoff (``confirm_at``) is snapshotted alongside as the
-    single authoritative display source for the game's RSVP deadline.
+    snapshotted onto the record so the game is always self-describing. Likewise,
+    when no ``hourly_rate`` is supplied the configured default hourly cost is
+    snapshotted so the game carries its own price; a €0 rate is stored verbatim
+    (a free game), distinct from an absent one. The floored confirmation cutoff
+    (``confirm_at``) is snapshotted alongside as the single authoritative display
+    source for the game's RSVP deadline.
 
     No weekStatus row is written: the number of games in a week is computed from
     that week's live game rows (see ``count_games_in_week``), which is
@@ -154,12 +158,16 @@ def create_game(
     if location is None:
         location = {"name": config.default_game_location, "mapUrl": config.default_game_map_url}
 
+    if hourly_rate is None:
+        hourly_rate = config.default_game_hourly_cost
+
     game_status_item = {
         "pk": {"S": game_pk(game_date)},
         "sk": {"S": "gameStatus"},
         "status": {"S": "OPEN"},
         "policy": _to_ddb_attr(policy),
         "location": _to_ddb_attr(location),
+        "hourlyRate": _to_ddb_attr(hourly_rate),
         "createdAt": {"S": now},
         "modifiedAt": {"S": now},
     }

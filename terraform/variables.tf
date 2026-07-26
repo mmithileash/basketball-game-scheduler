@@ -26,6 +26,12 @@ variable "default_game_map_url" {
   default     = ""
 }
 
+variable "default_game_hourly_cost" {
+  description = "Default per-hour game cost (in euros), used for any game the admin schedules without stating a cost. May be fractional (e.g. 42.50); 0 means a free game."
+  type        = number
+  default     = 45
+}
+
 variable "bedrock_model_id" {
   description = "AWS Bedrock inference profile ID for NLU intent parsing. Claude Haiku 4.5 is not available with on-demand throughput and must be invoked via a cross-region inference profile (e.g. 'us.' prefix for US regions, 'eu.' for EU regions)."
   type        = string

@@ -672,6 +672,124 @@ def test_send_admin_unclear_notification_contains_player_and_raw_message(mocker)
     assert "yo can i maybe swing by idk lol" in body
 
 
+# ---------------------------------------------------------------------------
+# Game cost
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+@pytest.mark.parametrize("amount, expected", [
+    (45, "€45"),
+    (45.0, "€45"),
+    (42.5, "€42.50"),
+    (42.75, "€42.75"),
+    (90, "€90"),
+    (0, "Free"),
+    (0.0, "Free"),
+])
+def test_format_euro(amount, expected):
+    from common.email_service import _format_euro
+    assert _format_euro(amount) == expected
+
+
+@pytest.mark.unit
+def test_format_euro_handles_decimal():
+    from decimal import Decimal
+    from common.email_service import _format_euro
+    assert _format_euro(Decimal("45")) == "€45"
+    assert _format_euro(Decimal("42.50")) == "€42.50"
+
+
+@pytest.mark.unit
+def test_announcement_shows_hourly_rate_override(mocker):
+    """A supplied hourly rate renders a single per-hour cost line."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement(
+        "player@example.com", "Alice", "2026-07-07", _TIERED_POLICY, hourly_rate=50
+    )
+    body = mock_send.call_args[0][2]
+    assert "Cost:" in body
+    assert "€50/hour" in body
+
+
+@pytest.mark.unit
+def test_announcement_falls_back_to_config_hourly_cost_when_none(mocker):
+    """With no rate supplied, the announcement shows the configured default (€45)."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement("player@example.com", "Alice", "2026-07-07", _TIERED_POLICY)
+    body = mock_send.call_args[0][2]
+    assert "€45/hour" in body
+
+
+@pytest.mark.unit
+def test_announcement_free_game_shows_free(mocker):
+    """A €0 rate renders as a Free cost line, never '€0/hour'."""
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_tentative_announcement(
+        "player@example.com", "Alice", "2026-07-07", _TIERED_POLICY, hourly_rate=0
+    )
+    body = mock_send.call_args[0][2]
+    assert "Cost:" in body
+    assert "Free" in body
+    assert "/hour" not in body
+
+
+@pytest.mark.unit
+def test_final_confirmation_shows_total_breakdown_and_count(mocker):
+    """The confirmation shows the full total, the rate breakdown, and the count."""
+    roster = {"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}}
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_final_confirmation_with_duration(
+        "player@example.com", "2026-07-07", roster, "10:00 AM", 2,
+        hourly_rate=45, confirmed_count=12,
+    )
+    body = mock_send.call_args[0][2]
+    assert "€90 total" in body
+    assert "2 hours" in body
+    assert "€45/hr" in body
+    assert "12 confirmed player" in body
+
+
+@pytest.mark.unit
+def test_final_confirmation_falls_back_to_config_hourly_cost(mocker):
+    """With no rate supplied the confirmation total uses the configured default (€45)."""
+    roster = {"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}}
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_final_confirmation_with_duration(
+        "player@example.com", "2026-07-07", roster, "10:00 AM", 1, confirmed_count=8,
+    )
+    body = mock_send.call_args[0][2]
+    assert "€45 total" in body
+
+
+@pytest.mark.unit
+def test_final_confirmation_free_game_shows_free(mocker):
+    """A €0 rate renders the cost as Free in the confirmation."""
+    roster = {"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}}
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_final_confirmation_with_duration(
+        "player@example.com", "2026-07-07", roster, "10:00 AM", 2,
+        hourly_rate=0, confirmed_count=10,
+    )
+    body = mock_send.call_args[0][2]
+    assert "Cost:" in body
+    assert "Free" in body
+    assert "total" not in body.lower()
+
+
+@pytest.mark.unit
+def test_final_confirmation_single_player_count_singular(mocker):
+    """The confirmed-player count is grammatically singular for one player."""
+    roster = {"YES": {"players": {}, "guests": []}, "NO": {"players": {}, "guests": []}, "MAYBE": {"players": {}, "guests": []}}
+    mock_send = mocker.patch("common.email_service.send_email")
+    send_final_confirmation_with_duration(
+        "player@example.com", "2026-07-07", roster, "10:00 AM", 1,
+        hourly_rate=45, confirmed_count=1,
+    )
+    body = mock_send.call_args[0][2]
+    assert "1 confirmed player" in body
+    assert "1 confirmed players" not in body
+
+
 @pytest.mark.unit
 @mock_aws
 def test_final_confirmation_omits_player_emails(mocker):

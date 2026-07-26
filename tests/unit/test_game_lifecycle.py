@@ -108,6 +108,42 @@ def test_announce_task_sends_to_all_active_players(mocker):
 
 
 @pytest.mark.unit
+def test_announce_task_passes_hourly_rate_to_email(mocker):
+    """The game's stored hourly rate is threaded through to the announcement."""
+    mocker.patch(
+        "game_lifecycle.announce_task.get_game_status",
+        return_value={"status": "OPEN", "policy": _TIERED_POLICY, "hourlyRate": 50},
+    )
+    mocker.patch(
+        "game_lifecycle.announce_task.get_active_players",
+        return_value=[{"email": "alice@example.com", "name": "Alice"}],
+    )
+    mock_announce = mocker.patch("game_lifecycle.announce_task.send_tentative_announcement")
+
+    announce_handler({"game_date": "2026-07-07"}, None)
+
+    assert mock_announce.call_args.kwargs["hourly_rate"] == 50
+
+
+@pytest.mark.unit
+def test_announce_task_passes_none_rate_for_legacy_game(mocker):
+    """A game with no stored hourlyRate passes None so the email falls back to config."""
+    mocker.patch(
+        "game_lifecycle.announce_task.get_game_status",
+        return_value={"status": "OPEN", "policy": _TIERED_POLICY},
+    )
+    mocker.patch(
+        "game_lifecycle.announce_task.get_active_players",
+        return_value=[{"email": "alice@example.com", "name": "Alice"}],
+    )
+    mock_announce = mocker.patch("game_lifecycle.announce_task.send_tentative_announcement")
+
+    announce_handler({"game_date": "2026-07-07"}, None)
+
+    assert mock_announce.call_args.kwargs["hourly_rate"] is None
+
+
+@pytest.mark.unit
 def test_announce_task_tiered_game_shows_two_branches(mocker):
     mocker.patch(
         "game_lifecycle.announce_task.get_game_status",
@@ -323,6 +359,29 @@ def test_confirm_or_cancel_freezes_short_tier_below_threshold(mocker):
     _, _, _, start_time, duration = mock_confirm.call_args[0]
     assert start_time == "11:00 AM"
     assert duration == 1
+
+
+@pytest.mark.unit
+def test_confirm_or_cancel_passes_hourly_rate_and_count_to_confirmation(mocker):
+    """The confirmation email gets the game's stored rate and the confirmed count."""
+    mocker.patch(
+        "game_lifecycle.confirm_or_cancel_task.get_game_status",
+        return_value={"status": "OPEN", "policy": _TIERED_POLICY, "hourlyRate": 45},
+    )
+    mocker.patch(
+        "game_lifecycle.confirm_or_cancel_task.get_roster",
+        return_value=_roster_with_yes(8),
+    )
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.get_pending_players", return_value=[])
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.update_game_status")
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.freeze_game_schedule")
+    mock_confirm = mocker.patch("game_lifecycle.confirm_or_cancel_task.send_final_confirmation_with_duration")
+
+    result = confirm_or_cancel_handler({"game_date": "2026-07-07"}, None)
+
+    assert result["game_open"] is True
+    assert mock_confirm.call_args.kwargs["hourly_rate"] == 45
+    assert mock_confirm.call_args.kwargs["confirmed_count"] == 8
 
 
 @pytest.mark.unit

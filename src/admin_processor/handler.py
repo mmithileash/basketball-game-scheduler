@@ -85,6 +85,51 @@ def _resolve_location(
     return None
 
 
+def _resolve_hourly_rate(
+    game_date: str, game_info: dict[str, Any], problems: list[str]
+) -> float | None:
+    """Classify a game's per-hour cost: override, default, or invalid.
+
+    Returns the admin's rate (a non-negative number; 0 = a free game) when one
+    was given, None to fall back to the configured default when the admin said
+    nothing, and appends to `problems` (holding the whole batch) when the value
+    is negative or non-numeric — the same fail-loud discipline as the timing and
+    venue checks.
+    """
+    cost = game_info.get("costPerHour")
+    if cost is None:
+        return None
+    # Coerce numbers and numeric strings (the model occasionally stringifies the
+    # rate, or prefixes a euro sign); a bool or anything genuinely unparseable is
+    # rejected. `None` from here means "couldn't read it".
+    rate: float | None
+    if isinstance(cost, bool):
+        rate = None
+    elif isinstance(cost, (int, float)):
+        rate = float(cost)
+    elif isinstance(cost, str):
+        try:
+            rate = float(cost.strip().lstrip("€").strip())
+        except ValueError:
+            rate = None
+    else:
+        rate = None
+
+    if rate is None:
+        problems.append(
+            f"  - {game_date}: I couldn't read the cost '{cost}'. Please give a "
+            f"per-hour cost as a number, e.g. '€45 per hour'."
+        )
+        return None
+    if rate < 0:
+        problems.append(
+            f"  - {game_date}: the cost can't be negative. Please give a per-hour "
+            f"cost of €0 or more (€0 for a free game)."
+        )
+        return None
+    return rate
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Lambda handler: process admin command emails."""
     s3_record = event["Records"][0]["s3"]
@@ -133,7 +178,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # away — holds the WHOLE batch: nothing is scheduled and the admin resends
         # one clean command.
         problems: list[str] = []
-        plans: list[tuple[str, dict[str, Any], dict[str, Any] | None, dict[str, Any]]] = []
+        plans: list[
+            tuple[str, dict[str, Any], dict[str, Any] | None, float | None, dict[str, Any]]
+        ] = []
         for game_info in games_to_schedule:
             game_date = game_info.get("date")
             if not game_date:
@@ -161,6 +208,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 policy = None  # timing partial; batch already held
 
             location = _resolve_location(game_date, game_info, problems)
+            hourly_rate = _resolve_hourly_rate(game_date, game_info, problems)
 
             if policy is None:
                 continue
@@ -191,7 +239,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 continue
 
             timestamps = sfn_timestamps_for_game(game_date, policy, now)
-            plans.append((game_date, policy, location, timestamps))
+            plans.append((game_date, policy, location, hourly_rate, timestamps))
 
         # Any problem holds the whole batch: create nothing, ask for a clean resend.
         if problems:
@@ -201,7 +249,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "I couldn't schedule your games because some couldn't be set up. "
                 "A game needs either no time at all (and I'll use the default tiers) "
                 "or both a start time and a duration, a custom venue needs both a name "
-                "and a map link, and every game must start at least 48 hours from now.\n\n"
+                "and a map link, any cost must be a per-hour amount of €0 or more, and "
+                "every game must start at least 48 hours from now.\n\n"
                 + "\n".join(problems)
                 + "\n\nNothing was scheduled. Please resend the complete command.",
             )
@@ -212,8 +261,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         scheduled: list[str] = []
         announce_lines: list[str] = []
 
-        for game_date, policy, location, timestamps in plans:
-            create_game(game_date, policy, location=location, confirm_at=timestamps["confirm_at"])
+        for game_date, policy, location, hourly_rate, timestamps in plans:
+            create_game(
+                game_date,
+                policy,
+                location=location,
+                confirm_at=timestamps["confirm_at"],
+                hourly_rate=hourly_rate,
+            )
             if sfn and sfn_arn:
                 try:
                     sfn.start_execution(
