@@ -18,7 +18,7 @@ class Config:
     long_game_duration_hours: int
     short_game_start_time: str
     short_game_duration_hours: int
-    max_games_per_week: int
+    min_games_per_week: int
 
 
 def load_config() -> Config:
@@ -39,5 +39,5 @@ def load_config() -> Config:
         long_game_duration_hours=int(os.environ.get("LONG_GAME_DURATION_HOURS", "2")),
         short_game_start_time=os.environ.get("SHORT_GAME_START_TIME", "11:00 AM"),
         short_game_duration_hours=int(os.environ.get("SHORT_GAME_DURATION_HOURS", "1")),
-        max_games_per_week=int(os.environ.get("MAX_GAMES_PER_WEEK", "1")),
+        min_games_per_week=int(os.environ.get("MIN_GAMES_PER_WEEK", "1")),
     )

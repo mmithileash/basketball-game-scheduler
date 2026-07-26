@@ -20,7 +20,7 @@ locals {
     LONG_GAME_DURATION_HOURS  = tostring(var.long_game_duration_hours)
     SHORT_GAME_START_TIME     = var.short_game_start_time
     SHORT_GAME_DURATION_HOURS = tostring(var.short_game_duration_hours)
-    MAX_GAMES_PER_WEEK        = tostring(var.max_games_per_week)
+    MIN_GAMES_PER_WEEK        = tostring(var.min_games_per_week)
     ADMIN_EMAIL               = var.admin_email
   }
 

@@ -16,17 +16,17 @@ returns), `src/common/date_utils.py` (`sfn_timestamps_for_game`).
 ```mermaid
 stateDiagram-v2
     [*] --> WaitForAnnouncement
-    WaitForAnnouncement --> AnnounceGame: at announce_at (T-7d 09:00 UTC)
+    WaitForAnnouncement --> AnnounceGame: at announce_at (adaptive: 48h..7d before start)
     AnnounceGame --> CheckOpenAfterAnnounce
     CheckOpenAfterAnnounce --> WaitForReminder: task_result.game_open == true
     CheckOpenAfterAnnounce --> Done: else — game not OPEN
 
-    WaitForReminder --> SendReminder: at reminder_at (T-4d 09:00 UTC)
+    WaitForReminder --> SendReminder: at reminder_at (adaptive: 36h..4d before start)
     SendReminder --> CheckOpenAfterReminder
     CheckOpenAfterReminder --> WaitForConfirmOrCancel: task_result.game_open == true
     CheckOpenAfterReminder --> Done: else
 
-    WaitForConfirmOrCancel --> ConfirmOrCancel: at confirm_at (T-2d 09:00 UTC)
+    WaitForConfirmOrCancel --> ConfirmOrCancel: at confirm_at (adaptive: 24h..2d before start, floored to the hour)
     ConfirmOrCancel --> CheckOpenAfterConfirm
     CheckOpenAfterConfirm --> WaitForFinalize: task_result.game_open == true
     CheckOpenAfterConfirm --> Done: else — no-go / cancelled
@@ -79,16 +79,20 @@ Lambda.
 
 ## Execution input
 
-`admin_processor` starts the execution (`name="game-2026-07-07"`) with timestamps computed by
-`sfn_timestamps_for_game()`:
+`admin_processor` starts the execution (`name="game-2026-08-01"`) with timestamps computed by
+`sfn_timestamps_for_game(game_date, policy, now)`. The four moments are **adaptive**, anchored
+to the game's real (earliest-tier) start and scaling between a 48h/36h/24h floor for same-week
+games and a 7d/4d/2d cap for far-out games; `confirm_at` is floored down to the top of the hour;
+`finalize_at` is the conservative maximum end across both tiers. Example (game Sat 2026-08-01
+10:00, admin replies Thu Jul 30 — the 48h floor):
 
 ```json
 {
-  "game_date": "2026-07-07",
-  "announce_at": "2026-06-30T09:00:00+00:00",
-  "reminder_at": "2026-07-03T09:00:00+00:00",
-  "confirm_at": "2026-07-05T09:00:00+00:00",
-  "finalize_at": "2026-07-07T13:00:00+00:00"
+  "game_date": "2026-08-01",
+  "announce_at": "2026-07-30T10:00:00+00:00",
+  "reminder_at": "2026-07-30T22:00:00+00:00",
+  "confirm_at": "2026-07-31T10:00:00+00:00",
+  "finalize_at": "2026-08-01T12:00:00+00:00"
 }
 ```
 

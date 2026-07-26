@@ -495,6 +495,7 @@ def test_decline_with_guests_moves_to_no_and_sends_followup():
          patch("email_processor.handler.update_player_response") as mock_update, \
          patch("email_processor.handler.remove_sponsor_guests_from_status") as mock_remove, \
          patch("email_processor.handler.add_guests_to_game_status") as mock_add, \
+         patch("email_processor.handler.get_game_status", return_value={"status": "OPEN", "confirmAt": "2026-04-03T18:00:00+00:00"}), \
          patch("email_processor.handler.send_email") as mock_send_email, \
          patch("email_processor.handler.send_guest_followup") as mock_followup:
 
@@ -519,6 +520,7 @@ def test_decline_with_guests_moves_to_no_and_sends_followup():
         sponsor_name="Alice",
         guest_names=["John"],
         game_date="2026-04-05",
+        cutoff="2026-04-03T18:00:00+00:00",
     )
 
 

@@ -176,11 +176,13 @@ def _apply_player_intent(
         sponsor_guests = remove_sponsor_guests_from_status(game_date, "YES", sender_email)
         if sponsor_guests:
             add_guests_to_game_status(game_date, "NO", sponsor_guests)
+            game = get_game_status(game_date)
             send_guest_followup(
                 sponsor_email=sender_email,
                 sponsor_name=player_name,
                 guest_names=[g["name"] for g in sponsor_guests],
                 game_date=game_date,
+                cutoff=game.get("confirmAt") if game else None,
             )
     elif intent == "MAYBE":
         player_name = get_player_name(sender_email)

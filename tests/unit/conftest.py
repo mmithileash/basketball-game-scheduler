@@ -17,7 +17,7 @@ def set_env_vars(monkeypatch):
     monkeypatch.setenv("DEFAULT_GAME_MAP_URL", "https://maps.example.com/main-court")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("LONG_GAME_THRESHOLD", "10")
-    monkeypatch.setenv("MAX_GAMES_PER_WEEK", "1")
+    monkeypatch.setenv("MIN_GAMES_PER_WEEK", "1")
     monkeypatch.setenv("GAME_LIFECYCLE_SFN_ARN", "arn:aws:states:eu-west-1:123456789012:stateMachine:basketball-game-lifecycle")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
