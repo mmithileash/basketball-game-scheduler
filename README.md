@@ -7,7 +7,7 @@ An automated, email-based basketball game scheduler built on AWS serverless infr
 1. **Monday 9AM UTC** — `weekly-scheduler` checks the **current** week; if it has fewer than the target number of live games (`min_games_per_week`, a floor) and no no-game decision is recorded, it emails active admins asking whether to schedule game(s). Games can be arranged and played in the same week.
 2. **Admin replies** in natural language — "Tuesday and Saturday", "No games this week" — `admin-processor` parses the command via Bedrock and either creates the game(s) (starting a per-game Step Functions execution) or marks the week as having no games. Any game starting less than 48h away, or with an unparseable time, holds the whole batch with an ask to resend. A future-week date is allowed and tracked on its own week.
 3. **Tuesday 9PM UTC** — `weekly-cutoff-checker` notifies all players **only when the current week genuinely ends with zero games** and no decision was already recorded
-4. **Per-game lifecycle** (`basketball-game-lifecycle` Step Functions execution): the announce/reminder/confirm/finalize moments are **adaptive**, anchored to the game's real start and scaling between a compressed 48h/36h/24h floor (same-week games) and a 7d/4d/2d cap (far-out games). Announce sends a tentative announcement (at creation for near-term games) showing the exact RSVP cutoff; reminder sends a low-signup nudge if needed; confirm (cutoff floored to the hour) makes the go/no-go decision (cancelling, or resolving the turnout tier and locking in the game's start time and duration); and after the game's actual end it is marked `PLAYED`
+4. **Per-game lifecycle** (`basketball-game-lifecycle` Step Functions execution): the announce/reminder/confirm/finalize moments are **adaptive**, anchored to the game's real start and scaling between a compressed 48h/36h/24h floor (same-week games) and a 7d/4d/2d cap (far-out games). Announce sends a tentative announcement (at creation for near-term games) showing the exact RSVP cutoff and the per-hour cost (`€45/hour`, or `Free`); reminder sends a low-signup nudge if needed; confirm (cutoff floored to the hour) makes the go/no-go decision (cancelling, or resolving the turnout tier, locking in the game's start time and duration, and emailing the full total cost with the confirmed player count); and after the game's actual end it is marked `PLAYED`
 5. **Players reply** in natural language — "I'm in", "Can't make it", "I'll bring 2 friends", "Who's playing?" — to whichever game's email thread they're responding to (the system disambiguates when multiple games are open at once)
 6. **The system understands** the intent via Claude (Bedrock) and updates that game's roster accordingly
 7. **Admins** can email `admin@<domain>` at any time to schedule/cancel games, add players, or deactivate/reactivate players
@@ -117,6 +117,7 @@ sender_email   = "scheduler@yourdomain.com"
 admin_email    = "admin@yourdomain.com"
 default_game_location = "Community Center Court"
 default_game_map_url  = "https://www.google.com/maps/place/Your+Venue"
+default_game_hourly_cost = 45
 ```
 
 ### 4. Import players
@@ -152,6 +153,7 @@ After `terraform apply`, update your domain registrar's nameservers to the ones 
 | `admin_email` | Admin command inbox (`admin@<domain>`) | *(required)* |
 | `default_game_location` | Default venue for games scheduled without an explicit location | `TBD` |
 | `default_game_map_url` | Optional map link for the default location | `""` |
+| `default_game_hourly_cost` | Default per-hour game cost (euros) for games scheduled without a stated cost; may be fractional, `0` = free | `45` |
 | `bedrock_model_id` | Bedrock inference profile for NLU | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
 | `min_players` | Minimum confirmed players for a game to proceed | `6` |
 | `long_game_threshold` | Confirmed count at/above which the long-game tier applies (otherwise the short-game tier) | `10` |
@@ -191,6 +193,7 @@ Admins email `admin@<domain>` in natural language. Admin status is stored in Dyn
 |---|---|
 | "Tuesday and Saturday" *(in response to the weekly prompt)* | Creates both games (each with the default two-tier policy) and starts a Step Functions execution for each |
 | "Saturday, 10am for 2 hours" | Creates a **fixed** game pinned to that start time and duration (equal tiers — no turnout branching) |
+| "Tuesday at the YMCA, map https://maps.app/xyz, €50 per hour" | Creates the game with that venue and per-hour cost snapshotted onto it (a custom venue needs both a name and a map link; cost must be a per-hour amount, `€0` for a free game) |
 | "No games this week" | Marks the week as no-game; players are notified |
 | "Cancel the game on 2026-04-19" (before announcement) | Game pre-cancelled directly in DynamoDB |
 | "Cancel the game on 2026-04-19" (after announcement) | Game cancelled, its Step Functions execution stopped, YES/MAYBE players and guests notified immediately |
