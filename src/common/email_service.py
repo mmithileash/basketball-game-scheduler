@@ -353,6 +353,48 @@ def _duration_label(hours: int) -> str:
     return f"{hours} hour{'s' if hours > 1 else ''}"
 
 
+def _format_euro(amount: Any) -> str:
+    """Format a euro amount for display: '€45', '€42.50', or 'Free' for zero.
+
+    Whole amounts drop the decimals ('€45', not '€45.00'); fractional amounts
+    show cents ('€42.50'). A zero cost reads as 'Free'.
+    """
+    value = float(amount)
+    if value == 0:
+        return "Free"
+    if value == int(value):
+        return f"€{int(value)}"
+    return f"€{value:.2f}"
+
+
+def _hourly_rate_display(hourly_rate: Any | None) -> str:
+    """The per-hour cost line value: '€45/hour' or 'Free'.
+
+    Falls back to the configured default hourly cost when no rate is supplied —
+    games created before per-game cost existed carry no stored rate.
+    """
+    rate = hourly_rate if hourly_rate is not None else _get_config().default_game_hourly_cost
+    formatted = _format_euro(rate)
+    return formatted if formatted == "Free" else f"{formatted}/hour"
+
+
+def _cost_total_display(hourly_rate: Any | None, duration_hours: int, confirmed_count: int) -> str:
+    """The confirmation's total-cost line value.
+
+    Shows the full total with its breakdown and the confirmed count, e.g.
+    '€90 total (2 hours × €45/hr, 12 confirmed players)'. A €0 rate reads 'Free'.
+    """
+    rate = hourly_rate if hourly_rate is not None else _get_config().default_game_hourly_cost
+    if float(rate) == 0:
+        return "Free"
+    total = float(rate) * duration_hours
+    players = f"{confirmed_count} confirmed player{'s' if confirmed_count != 1 else ''}"
+    return (
+        f"{_format_euro(total)} total "
+        f"({_duration_label(duration_hours)} × {_format_euro(rate)}/hr, {players})"
+    )
+
+
 def _location_display(location: dict[str, Any] | None = None) -> str:
     """The venue line for email bodies.
 
@@ -412,6 +454,7 @@ def send_tentative_announcement(
     policy: dict[str, Any],
     location: dict[str, Any] | None = None,
     cutoff: str | None = None,
+    hourly_rate: Any | None = None,
 ) -> None:
     """Send game announcement driven by the game's policy.
 
@@ -419,7 +462,9 @@ def send_tentative_announcement(
     with concrete times; when they are equal it shows a single time line. The
     venue comes from the game's snapshotted `location`, falling back to the
     configured default when none is supplied. When the game's stored, floored
-    RSVP cutoff is known it is shown as a clean, exact deadline.
+    RSVP cutoff is known it is shown as a clean, exact deadline. The per-hour
+    cost is shown as a single tier-independent line (the rate is per-hour, so it
+    doesn't depend on turnout); a €0 game reads 'Free'.
     """
     from common.policy import is_fixed
 
@@ -455,6 +500,7 @@ def send_tentative_announcement(
         f"  Date:      {_pretty_date(game_date)}\n"
         f"{timing}"
         f"  Location:  {_location_display(location)}\n"
+        f"  Cost:      {_hourly_rate_display(hourly_rate)}\n"
         f"{cutoff_line}\n"
         f"  We need at least {policy['minPlayers']} players to play.\n\n"
         f"{_DIVIDER}\n"
@@ -483,8 +529,16 @@ def send_final_confirmation_with_duration(
     start_time: str,
     duration_hours: int,
     location: dict[str, Any] | None = None,
+    hourly_rate: Any | None = None,
+    confirmed_count: int = 0,
 ) -> None:
-    """Send final game confirmation with the locked-in start time and duration."""
+    """Send final game confirmation with the locked-in start time and duration.
+
+    Now that the tier and duration are frozen and the roster is known, the cost
+    is shown as a full total with its breakdown and the confirmed player count
+    (e.g. '€90 total (2 hours × €45/hr, 12 confirmed players)'); a €0 game reads
+    'Free'. The rate falls back to the configured default when none is supplied.
+    """
     subject = f"Confirmed: Basketball Game - {game_date} [Game: {game_date}]"
 
     yes_data = roster.get("YES", {})
@@ -502,7 +556,8 @@ def send_final_confirmation_with_duration(
         f"The basketball game is ON for {game_date}!\n\n"
         f"Time: {start_time}\n"
         f"Duration: {_duration_label(duration_hours)}\n"
-        f"Location: {_location_display(location)}\n\n"
+        f"Location: {_location_display(location)}\n"
+        f"Cost: {_cost_total_display(hourly_rate, duration_hours, confirmed_count)}\n\n"
         f"Confirmed players:\n{roster_text}\n\n"
         f"See you there!\n"
     )

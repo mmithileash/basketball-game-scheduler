@@ -329,7 +329,34 @@ def test_parse_admin_email_schedule_games_reports_unmentioned_timing_as_null(moc
         "durationHours": None,
         "location": None,
         "mapUrl": None,
+        "costPerHour": None,
     }
+
+
+@pytest.mark.unit
+def test_parse_admin_email_schedule_games_surfaces_cost(mocker):
+    """A per-hour cost mentioned by the admin comes back on the game."""
+    _make_admin_bedrock_response(mocker, {
+        "intent": "SCHEDULE_GAMES",
+        "games": [{"date": "2026-07-07", "costPerHour": 50}],
+    })
+
+    result = parse_admin_email("Schedule Tuesday, court is €50 per hour", "admin@example.com")
+
+    assert result["games"][0]["costPerHour"] == 50
+
+
+@pytest.mark.unit
+def test_parse_admin_email_schedule_games_unmentioned_cost_is_null(mocker):
+    """When the admin says nothing about cost, costPerHour comes back null."""
+    _make_admin_bedrock_response(mocker, {
+        "intent": "SCHEDULE_GAMES",
+        "games": [{"date": "2026-07-07"}],
+    })
+
+    result = parse_admin_email("Schedule Tuesday", "admin@example.com")
+
+    assert result["games"][0]["costPerHour"] is None
 
 
 @pytest.mark.unit

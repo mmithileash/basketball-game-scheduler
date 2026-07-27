@@ -40,6 +40,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     policy = game["policy"]
     location = game.get("location")
+    hourly_rate = game.get("hourlyRate")
     min_players = int(policy["minPlayers"])
     roster = get_roster(game_date)
     confirmed_count = _count_confirmed(roster)
@@ -78,7 +79,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     for player_email in yes_players:
         try:
             send_final_confirmation_with_duration(
-                player_email, game_date, roster, start_time, duration_hours, location=location
+                player_email, game_date, roster, start_time, duration_hours,
+                location=location, hourly_rate=hourly_rate, confirmed_count=confirmed_count,
             )
         except Exception:
             logger.error(f"Failed to send confirmation to {player_email}", exc_info=True)

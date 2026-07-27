@@ -467,6 +467,138 @@ def test_schedule_games_with_location_override_snapshots_it(mocker):
 
 
 @pytest.mark.unit
+def test_schedule_games_without_cost_defaults(mocker):
+    """A game with no cost mentioned is created with hourly_rate=None (config default)."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None,
+             "location": None, "mapUrl": None, "costPerHour": None},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["hourly_rate"] is None
+
+
+@pytest.mark.unit
+def test_schedule_games_with_cost_override_snapshots_it(mocker):
+    """A per-hour cost mentioned by the admin is passed through to create_game."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None,
+             "location": None, "mapUrl": None, "costPerHour": 50},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday, €50 per hour")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["hourly_rate"] == 50
+
+
+@pytest.mark.unit
+def test_schedule_games_zero_cost_is_free_game(mocker):
+    """A €0 per-hour cost is a valid free game, passed through verbatim."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None,
+             "location": None, "mapUrl": None, "costPerHour": 0},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday, free court")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["hourly_rate"] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raw_cost, expected", [("50", 50.0), ("€42.50", 42.5)])
+def test_schedule_games_numeric_string_cost_is_coerced(mocker, raw_cost, expected):
+    """A stringified/€-prefixed rate from the model is coerced, not rejected."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-07", "startTime": None, "durationHours": None,
+             "location": None, "mapUrl": None, "costPerHour": raw_cost},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mocker.MagicMock())
+    mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Tuesday")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_called_once()
+    assert mock_create.call_args.kwargs["hourly_rate"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_cost", [-5, "expensive"])
+def test_schedule_games_invalid_cost_holds_whole_batch(mocker, bad_cost):
+    """A negative or non-numeric cost holds the entire batch with a clear ask."""
+    mocker.patch("admin_processor.handler.is_admin", return_value=True)
+    _patch_now(mocker)
+    mocker.patch("admin_processor.handler.parse_admin_email", return_value={
+        "intent": "SCHEDULE_GAMES",
+        "game_date": None, "email": None, "name": None, "is_admin": None,
+        "games": [
+            {"date": "2026-07-11", "startTime": None, "durationHours": None,
+             "location": None, "mapUrl": None, "costPerHour": bad_cost},
+        ],
+    })
+    mock_create = mocker.patch("admin_processor.handler.create_game")
+    mock_sfn = mocker.MagicMock()
+    mocker.patch("admin_processor.handler._get_sfn_client", return_value=mock_sfn)
+    mock_send = mocker.patch("admin_processor.handler.send_email")
+    _patch_s3(mocker, "admin@example.com", "Re: Schedule", "Saturday, weird cost")
+
+    result = handler(_make_s3_event("test-email-bucket", "admin/x"), None)
+
+    assert result["statusCode"] == 200
+    mock_create.assert_not_called()
+    mock_sfn.start_execution.assert_not_called()
+    mock_send.assert_called_once()
+    body = mock_send.call_args[0][2]
+    assert "2026-07-11" in body
+    assert "cost" in body.lower()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("location, map_url, missing_hint", [
     ("The YMCA", None, "map link"),
     (None, "https://maps.app/xyz", "name"),

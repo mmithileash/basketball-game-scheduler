@@ -268,6 +268,45 @@ def test_create_game_stores_explicit_location(sample_game_date):
 
 @pytest.mark.unit
 @mock_aws
+def test_create_game_seeds_default_hourly_rate_when_omitted(sample_game_date):
+    """Omitting hourly_rate snapshots the configured default cost (€45)."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date)
+
+    item = get_game_status(sample_game_date)
+    assert float(item["hourlyRate"]) == 45
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stores_explicit_hourly_rate(sample_game_date):
+    """A per-hour rate passed to create_game is snapshotted on the gameStatus item."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date, hourly_rate=42.5)
+
+    item = get_game_status(sample_game_date)
+    assert float(item["hourlyRate"]) == 42.5
+
+
+@pytest.mark.unit
+@mock_aws
+def test_create_game_stores_zero_hourly_rate_for_free_game(sample_game_date):
+    """A €0 rate is stored verbatim (a free game), not treated as missing."""
+    _reset_dynamo_caches()
+    _create_tables()
+
+    create_game(sample_game_date, hourly_rate=0)
+
+    item = get_game_status(sample_game_date)
+    assert float(item["hourlyRate"]) == 0
+
+
+@pytest.mark.unit
+@mock_aws
 def test_freeze_game_schedule_persists_resolved_time_and_duration(sample_game_date):
     """freeze_game_schedule writes the resolved start time and duration onto the game."""
     _reset_dynamo_caches()

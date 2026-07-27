@@ -13,6 +13,7 @@ locals {
     SENDER_EMAIL              = var.sender_email
     DEFAULT_GAME_LOCATION     = var.default_game_location
     DEFAULT_GAME_MAP_URL      = var.default_game_map_url
+    DEFAULT_GAME_HOURLY_COST  = tostring(var.default_game_hourly_cost)
     BEDROCK_MODEL_ID          = var.bedrock_model_id
     MIN_PLAYERS               = tostring(var.min_players)
     LONG_GAME_THRESHOLD       = tostring(var.long_game_threshold)

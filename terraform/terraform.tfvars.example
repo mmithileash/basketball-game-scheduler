@@ -3,4 +3,7 @@ sender_email  = "aiagent@example.com"
 default_game_location = "Your Court / Venue, 1 Example St, City"
 # Optional: link the default location to a map. Leave empty to show the plain address.
 default_game_map_url  = "https://www.google.com/maps/place/Your+Venue"
+# Optional: default per-hour game cost in euros for games scheduled without a stated cost.
+# May be fractional (e.g. 42.50); 0 means a free game. Defaults to 45.
+default_game_hourly_cost = 45
 admin_email   = "admin@example.com"

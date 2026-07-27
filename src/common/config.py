@@ -11,6 +11,7 @@ class Config:
     admin_email: str
     default_game_location: str
     default_game_map_url: str
+    default_game_hourly_cost: float
     bedrock_model_id: str
     min_players: int
     long_game_threshold: int
@@ -30,6 +31,7 @@ def load_config() -> Config:
         admin_email=os.environ["ADMIN_EMAIL"],
         default_game_location=os.environ.get("DEFAULT_GAME_LOCATION", "TBD"),
         default_game_map_url=os.environ.get("DEFAULT_GAME_MAP_URL", ""),
+        default_game_hourly_cost=float(os.environ.get("DEFAULT_GAME_HOURLY_COST", "45")),
         bedrock_model_id=os.environ.get(
             "BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
         ),

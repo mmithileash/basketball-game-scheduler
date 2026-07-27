@@ -199,7 +199,8 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         "name": str | None,        # Player name, for ADD_PLAYER / ADD_ADMIN
         "is_admin": bool | None,   # True for ADD_ADMIN
         "games": list[{"date": str, "startTime": str | None, "durationHours": int | None,
-                       "location": str | None, "mapUrl": str | None}],  # for SCHEDULE_GAMES
+                       "location": str | None, "mapUrl": str | None,
+                       "costPerHour": float | None}],  # for SCHEDULE_GAMES
     }
     """
     config = _get_config()
@@ -233,7 +234,7 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         '  "email": "player email or null",\n'
         '  "name": "player name or null",\n'
         '  "is_admin": true/false/null,\n'
-        '  "games": [{{"date": "YYYY-MM-DD", "startTime": "display time e.g. 9:00 AM, or null", "durationHours": "integer or null", "location": "venue name or null", "mapUrl": "map link URL or null"}}]\n'
+        '  "games": [{{"date": "YYYY-MM-DD", "startTime": "display time e.g. 9:00 AM, or null", "durationHours": "integer or null", "location": "venue name or null", "mapUrl": "map link URL or null", "costPerHour": "per-hour cost as a number, or null"}}]\n'
         '}}\n\n'
         "For SCHEDULE_GAMES: populate 'games' with each game's date. Report ONLY what the "
         "admin actually said about timing: set 'startTime' to a display-ready time string "
@@ -244,6 +245,10 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         "(e.g. 'the YMCA', 'Central Court'), otherwise null; set 'mapUrl' to the map link "
         "if the admin gave a URL, otherwise null. Do NOT invent a venue or map link that "
         "wasn't mentioned.\n"
+        "For each game's cost: set 'costPerHour' to the PER-HOUR rate as a plain number if "
+        "the admin gave one (e.g. '€50 per hour' -> 50, 'court is 42.50/hr' -> 42.5), "
+        "otherwise null. Only report a per-hour rate; if the admin gives a whole-game total "
+        "rather than a per-hour rate, set costPerHour to null. Do NOT invent a cost.\n"
         "For NO_GAMES_THIS_WEEK: set games to [].\n"
         "For CANCEL_GAME: set game_date to the date being cancelled (YYYY-MM-DD). "
         "If you truly cannot determine the date, set game_date to null.\n"
@@ -282,6 +287,7 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
                 "durationHours": g.get("durationHours"),
                 "location": g.get("location"),
                 "mapUrl": g.get("mapUrl"),
+                "costPerHour": g.get("costPerHour"),
             }
             for g in result.get("games", [])
         ]
