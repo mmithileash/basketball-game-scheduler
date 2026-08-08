@@ -42,3 +42,13 @@ output "email_bucket_name" {
   description = "Name of the S3 bucket for inbound emails"
   value       = aws_s3_bucket.email_inbox.id
 }
+
+output "alerts_sns_topic_arn" {
+  description = "ARN of the SNS topic that fans out cost, error, and usage alerts"
+  value       = aws_sns_topic.alerts.arn
+}
+
+output "alert_email" {
+  description = "Email address that receives alerts (confirm the SNS subscription in this inbox)"
+  value       = local.alert_email
+}
