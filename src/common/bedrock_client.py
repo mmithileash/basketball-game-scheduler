@@ -7,6 +7,7 @@ from typing import Any
 import boto3
 
 from common.config import load_config
+from common.dynamo import RSVP_STATUSES
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -40,18 +41,37 @@ def _get_bedrock_client():
     return _bedrock_client
 
 
+def _invoke_json(system_prompt: str, email_body: str) -> dict[str, Any]:
+    """Send one email body to the model and return its reply parsed as JSON.
+
+    Raises json.JSONDecodeError if the reply isn't JSON, or the underlying
+    client error if the call itself fails.
+    """
+    request_body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 512,
+        "system": system_prompt,
+        "messages": [
+            {"role": "user", "content": email_body},
+        ],
+    }
+    response = _get_bedrock_client().invoke_model(
+        modelId=_get_config().bedrock_model_id,
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps(request_body),
+    )
+    response_body = json.loads(response["body"].read())
+    return json.loads(_extract_json(response_body["content"][0]["text"]))
+
+
 def _build_roster_context(roster: dict[str, Any]) -> str:
     """Build a human-readable roster summary for the LLM context."""
     lines: list[str] = []
-    for status in ("YES", "NO", "MAYBE"):
+    for status in RSVP_STATUSES:
         data = roster.get(status, {})
-        if isinstance(data, dict):
-            players = data.get("players", {})
-            guests = data.get("guests", [])
-        else:
-            # Legacy shape fallback (email-keyed dict)
-            players = data
-            guests = []
+        players = data.get("players", {})
+        guests = data.get("guests", [])
 
         if players or guests:
             lines.append(f"{status}:")
@@ -80,9 +100,6 @@ def parse_player_email(
         "reply_draft": str,
     }
     """
-    config = _get_config()
-    client = _get_bedrock_client()
-
     roster_context = _build_roster_context(roster)
 
     system_prompt = (
@@ -120,28 +137,8 @@ def parse_player_email(
         "The reply_draft should be a brief, friendly response confirming the action taken."
     ).format(sender_email=sender_email, roster_context=roster_context)
 
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 512,
-        "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": email_body},
-        ],
-    }
-
     try:
-        response = client.invoke_model(
-            modelId=config.bedrock_model_id,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps(request_body),
-        )
-
-        response_body = json.loads(response["body"].read())
-        assistant_text = _extract_json(response_body["content"][0]["text"])
-
-        # Parse the JSON response
-        result = json.loads(assistant_text)
+        result = _invoke_json(system_prompt, email_body)
 
         logger.info(
             f"Result from LLM parsing {sender_email}, {result}"
@@ -203,9 +200,6 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
                        "costPerHour": float | None}],  # for SCHEDULE_GAMES
     }
     """
-    config = _get_config()
-    client = _get_bedrock_client()
-
     today = date.today()
     upcoming_dates = [
         f"{(today + timedelta(days=i)).isoformat()} ({(today + timedelta(days=i)).strftime('%A')})"
@@ -257,26 +251,8 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
         "For DEACTIVATE_PLAYER / REACTIVATE_PLAYER: set email to the player's email address."
     )
 
-    request_body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 512,
-        "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": email_body},
-        ],
-    }
-
     try:
-        response = client.invoke_model(
-            modelId=config.bedrock_model_id,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps(request_body),
-        )
-
-        response_body = json.loads(response["body"].read())
-        assistant_text = _extract_json(response_body["content"][0]["text"])
-        result = json.loads(assistant_text)
+        result = _invoke_json(system_prompt, email_body)
 
         logger.info(f"Admin command parsed for {sender_email}: {result}")
 
@@ -303,21 +279,13 @@ def parse_admin_email(email_body: str, sender_email: str) -> dict[str, Any]:
 
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse Bedrock admin response as JSON: {e}")
-        return {
-            "intent": "UNKNOWN",
-            "game_date": None,
-            "email": None,
-            "name": None,
-            "is_admin": None,
-            "games": [],
-        }
     except Exception as e:
         logger.error(f"Error calling Bedrock for admin command: {e}", exc_info=True)
-        return {
-            "intent": "UNKNOWN",
-            "game_date": None,
-            "email": None,
-            "name": None,
-            "is_admin": None,
-            "games": [],
-        }
+    return {
+        "intent": "UNKNOWN",
+        "game_date": None,
+        "email": None,
+        "name": None,
+        "is_admin": None,
+        "games": [],
+    }

@@ -21,11 +21,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     all_guests: list = []
     try:
         roster = get_roster(game_date)
-        all_guests = (
-            roster["YES"]["guests"]
-            + roster["NO"]["guests"]
-            + roster["MAYBE"]["guests"]
-        )
+        all_guests = [g for status_data in roster.values() for g in status_data["guests"]]
         if all_guests:
             delete_guest_entries(all_guests)
     except Exception:

@@ -10,7 +10,6 @@ from common.email_service import (
     send_email,
     send_final_confirmation_with_duration,
     send_guest_followup,
-    send_no_game_announcement,
     send_no_game_this_week,
     send_rate_limit_notice,
     send_reminder,
@@ -216,33 +215,6 @@ def test_send_guest_followup_without_name(mocker):
 
 @pytest.mark.unit
 @mock_aws
-def test_send_no_game_announcement(mocker):
-    mock_send = mocker.patch("common.email_service.send_email")
-
-    send_no_game_announcement("alice@example.com", "Alice", "2026-04-11")
-
-    mock_send.assert_called_once()
-    args = mock_send.call_args[0]
-    assert args[0] == "alice@example.com"
-    assert "2026-04-11" in args[1]  # subject
-    assert "cancelled" in args[2].lower() or "no game" in args[2].lower()
-
-
-@pytest.mark.unit
-@mock_aws
-def test_send_no_game_announcement_no_name(mocker):
-    mock_send = mocker.patch("common.email_service.send_email")
-
-    send_no_game_announcement("alice@example.com", None, "2026-04-11")
-
-    mock_send.assert_called_once()
-    args = mock_send.call_args[0]
-    assert "2026-04-11" in args[2]
-    assert "Hi None" not in args[2]
-
-
-@pytest.mark.unit
-@mock_aws
 def test_send_admin_cancelled_broadcast(mocker):
     mock_send = mocker.patch("common.email_service.send_email")
 
@@ -379,16 +351,6 @@ def test_unsubscribe_footer_in_final_confirmation(mocker):
     }
     mock_send = mocker.patch("common.email_service.send_email")
     send_final_confirmation_with_duration("player@example.com", "2026-04-12", roster, "10:00 AM", 2)
-    body = mock_send.call_args[0][2]
-    assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
-
-
-@pytest.mark.unit
-@mock_aws
-def test_unsubscribe_footer_in_no_game_announcement(mocker):
-    _setup_ses()
-    mock_send = mocker.patch("common.email_service.send_email")
-    send_no_game_announcement("player@example.com", "Alice", "2026-04-12")
     body = mock_send.call_args[0][2]
     assert "mailto:scheduler@example.com?subject=UNSUBSCRIBE" in body
 

@@ -2,10 +2,12 @@ import logging
 from typing import Any
 
 from common.dynamo import (
+    count_confirmed,
     freeze_game_schedule,
     get_game_status,
     get_pending_players,
     get_roster,
+    guest_contact_emails,
     update_game_status,
 )
 from common.email_service import send_cancellation, send_final_confirmation_with_duration
@@ -13,20 +15,6 @@ from common.policy import resolve_tier
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-def _count_confirmed(roster: dict[str, Any]) -> int:
-    yes = roster.get("YES", {})
-    return len(yes.get("players", {})) + len(yes.get("guests", []))
-
-
-def _guest_contact_emails(roster: dict[str, Any], statuses: list[str]) -> list[str]:
-    return [
-        guest["pk"]
-        for status in statuses
-        for guest in roster.get(status, {}).get("guests", [])
-        if guest.get("sk") == "guest#active"
-    ]
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -43,7 +31,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     hourly_rate = game.get("hourlyRate")
     min_players = int(policy["minPlayers"])
     roster = get_roster(game_date)
-    confirmed_count = _count_confirmed(roster)
+    confirmed_count = count_confirmed(roster)
 
     if confirmed_count < min_players:
         update_game_status(game_date, "CANCELLED")
@@ -51,7 +39,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         all_emails: set[str] = set()
         for status_data in roster.values():
             all_emails.update(status_data.get("players", {}).keys())
-        for player in get_pending_players(game_date):
+        for player in get_pending_players(game_date, roster=roster):
             all_emails.add(player["email"])
 
         for email in all_emails:
@@ -60,7 +48,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             except Exception:
                 logger.error(f"Failed to send cancellation to {email}", exc_info=True)
 
-        for guest_email in _guest_contact_emails(roster, ["YES", "MAYBE"]):
+        for guest_email in guest_contact_emails(roster, ["YES", "MAYBE"]):
             try:
                 send_cancellation(guest_email, game_date, min_players)
             except Exception:
@@ -85,7 +73,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         except Exception:
             logger.error(f"Failed to send confirmation to {player_email}", exc_info=True)
 
-    for guest_email in _guest_contact_emails(roster, ["YES"]):
+    for guest_email in guest_contact_emails(roster, ["YES"]):
         try:
             send_final_confirmation_with_duration(
                 guest_email, game_date, roster, start_time, duration_hours, location=location

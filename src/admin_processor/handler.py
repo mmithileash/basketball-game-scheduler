@@ -17,6 +17,7 @@ from common.dynamo import (
     get_active_players,
     get_game_status,
     get_roster,
+    guest_contact_emails,
     is_admin,
     pre_cancel_game,
     reactivate_player,
@@ -30,7 +31,6 @@ from common.email_service import (
 )
 from common.email_utils import fetch_email_from_s3
 
-_s3_client = None
 _sfn_client = None
 
 
@@ -143,11 +143,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         subject = "Admin Command"
     logger.info(f"Admin email from {sender_email}, subject: {subject}")
 
+    def reply(text: str) -> None:
+        send_email(sender_email, f"Re: {subject}", text)
+
     if not is_admin(sender_email):
         logger.warning(f"Rejected non-admin sender: {sender_email}")
-        send_email(
-            sender_email,
-            f"Re: {subject}",
+        reply(
             "You are not authorised to send admin commands. "
             "Please contact the organiser if you believe this is an error.",
         )
@@ -161,9 +162,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if intent == "SCHEDULE_GAMES":
         games_to_schedule = parsed.get("games", [])
         if not games_to_schedule:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 "I couldn't parse any game dates from your message. "
                 "Please specify dates like 'Tuesday July 7' or 'Saturday July 12'.",
             )
@@ -243,9 +242,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         # Any problem holds the whole batch: create nothing, ask for a clean resend.
         if problems:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 "I couldn't schedule your games because some couldn't be set up. "
                 "A game needs either no time at all (and I'll use the default tiers) "
                 "or both a start time and a duration, a custom venue needs both a name "
@@ -269,7 +266,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 confirm_at=timestamps["confirm_at"],
                 hourly_rate=hourly_rate,
             )
-            if sfn and sfn_arn:
+            if sfn:
                 try:
                     sfn.start_execution(
                         stateMachineArn=sfn_arn,
@@ -284,9 +281,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             announce_lines.append(f"  - {game_date}: players are told on {announce_date}")
             logger.info(f"Scheduled game for {game_date}")
 
-        send_email(
-            sender_email,
-            f"Re: {subject}",
+        reply(
             f"Done. Scheduled {len(scheduled)} game(s): {', '.join(scheduled)}.\n\n"
             f"Each game's announcement goes out on the date shown below:\n"
             + "\n".join(announce_lines)
@@ -307,9 +302,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             except Exception:
                 logger.error(f"Failed to notify {player['email']}", exc_info=True)
 
-        send_email(
-            sender_email,
-            f"Re: {subject}",
+        reply(
             f"Done. Players have been notified there are no games this week ({week_start_str}).",
         )
         logger.info(f"Admin declined games for week {week_start_str}, notified {len(players)} player(s)")
@@ -317,9 +310,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     elif intent == "CANCEL_GAME":
         game_date = parsed.get("game_date")
         if not game_date:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 "I couldn't determine which date to cancel. "
                 "Please specify a date (e.g. 'Cancel the game on 2026-04-11').",
             )
@@ -329,9 +320,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         if existing is None:
             pre_cancel_game(game_date)
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 f"Done. The game on {game_date} has been pre-cancelled. "
                 f"Players will be notified on Monday that there is no game this week.",
             )
@@ -347,23 +336,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 for player_email in roster.get(status_key, {}).get("players", {}).keys():
                     send_admin_cancelled_broadcast(player_email, game_date, include_unsubscribe=True)
                     notified.add(player_email)
-                for guest in roster.get(status_key, {}).get("guests", []):
-                    if guest.get("sk") == "guest#active":
-                        send_admin_cancelled_broadcast(guest["pk"], game_date)
-                        notified.add(guest["pk"])
+            for guest_email in guest_contact_emails(roster, ["YES", "MAYBE"]):
+                send_admin_cancelled_broadcast(guest_email, game_date)
+                notified.add(guest_email)
 
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 f"Done. The game on {game_date} has been cancelled. "
                 f"Notified {len(notified)} player(s) and guest(s) who had responded YES or MAYBE.",
             )
             logger.info(f"Cancelled open game {game_date}, notified {len(notified)} players/guests")
 
         else:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 f"The game on {game_date} is already {existing.get('status')}. No changes made.",
             )
 
@@ -373,9 +357,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         player_is_admin = intent == "ADD_ADMIN"
 
         if not player_email or not player_name:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 "Please provide both an email address and a name. "
                 "Example: 'Add player alice@example.com, name Alice'",
             )
@@ -383,9 +365,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
         add_player(player_email, player_name, is_admin=player_is_admin)
         role = "admin" if player_is_admin else "player"
-        send_email(
-            sender_email,
-            f"Re: {subject}",
+        reply(
             f"Done. Added {player_name} ({player_email}) as a {role}.",
         )
         logger.info(f"Added {role} {player_email}")
@@ -393,47 +373,37 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     elif intent == "DEACTIVATE_PLAYER":
         player_email = parsed.get("email")
         if not player_email:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 "Please provide the email address of the player to deactivate.",
             )
             return {"statusCode": 200, "body": "Missing email"}
 
         try:
             deactivate_player(player_email)
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 f"Done. {player_email} has been deactivated and will no longer receive game emails.",
             )
         except ValueError as e:
-            send_email(sender_email, f"Re: {subject}", f"Error: {e}")
+            reply(f"Error: {e}")
 
     elif intent == "REACTIVATE_PLAYER":
         player_email = parsed.get("email")
         if not player_email:
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 "Please provide the email address of the player to reactivate.",
             )
             return {"statusCode": 200, "body": "Missing email"}
 
         try:
             reactivate_player(player_email)
-            send_email(
-                sender_email,
-                f"Re: {subject}",
+            reply(
                 f"Done. {player_email} has been reactivated and will receive future game emails.",
             )
         except ValueError as e:
-            send_email(sender_email, f"Re: {subject}", f"Error: {e}")
+            reply(f"Error: {e}")
 
     else:
-        send_email(
-            sender_email,
-            f"Re: {subject}",
+        reply(
             "I couldn't understand that command. Available commands:\n"
             "- Schedule games: 'Tuesday and Saturday'\n"
             "- No games this week\n"
