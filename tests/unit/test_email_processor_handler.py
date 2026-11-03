@@ -319,6 +319,115 @@ def test_handler_guest_query_roster_does_not_trust_model_count(mocker):
 
 
 @pytest.mark.unit
+def test_handler_query_player_answers_only_that_player(mocker):
+    """A question about one specific player names just that person and their
+    status — it must NOT dump the whole roster."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Is Konrad playing?")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-10-17", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={
+            "YES": {"players": {"konrad@x.com": {"name": "Konrad Marciniak"}}, "guests": []},
+            "NO": {"players": {"eamon@x.com": {"name": "Eamon Wong"}}, "guests": []},
+            "MAYBE": {"players": {}, "guests": []},
+        },
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={
+            "intent": "QUERY_PLAYER",
+            "guests": [],
+            "confirmed_guest_names": [],
+            "query_target": "Konrad",
+            "reply_draft": "Konrad is playing!",
+        },
+    )
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    body = mock_send.call_args[0][2]
+    assert body == "Konrad Marciniak is playing for 2026-10-17."
+    # The whole roster is NOT listed, and the other player isn't leaked.
+    assert "Current Responses" not in body
+    assert "Eamon Wong" not in body
+
+
+@pytest.mark.unit
+def test_handler_query_player_mentions_their_guests(mocker):
+    """When the queried player is bringing guests, the one-line answer says so."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Is Konrad in?")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-10-17", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={
+            "YES": {
+                "players": {"konrad@x.com": {"name": "Konrad Marciniak"}},
+                "guests": [{"name": "son", "sponsorEmail": "konrad@x.com", "sponsorName": "Konrad Marciniak"}],
+            },
+            "NO": {"players": {}, "guests": []},
+            "MAYBE": {"players": {}, "guests": []},
+        },
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={
+            "intent": "QUERY_PLAYER", "guests": [], "confirmed_guest_names": [],
+            "query_target": "konrad@x.com", "reply_draft": "yes",
+        },
+    )
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    body = mock_send.call_args[0][2]
+    assert body == "Konrad Marciniak is playing for 2026-10-17. They're bringing 1 guest."
+
+
+@pytest.mark.unit
+def test_handler_query_player_unknown_falls_back_to_roster(mocker):
+    """If we can't match the person asked about, fall back to the full roster so
+    the asker still gets a useful answer."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Is Zoltan playing?")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-10-17", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={
+            "YES": {"players": {"konrad@x.com": {"name": "Konrad Marciniak"}}, "guests": []},
+            "NO": {"players": {}, "guests": []},
+            "MAYBE": {"players": {}, "guests": []},
+        },
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={
+            "intent": "QUERY_PLAYER", "guests": [], "confirmed_guest_names": [],
+            "query_target": "Zoltan", "reply_draft": "hmm",
+        },
+    )
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    body = mock_send.call_args[0][2]
+    assert "couldn't find that player" in body
+    assert "Current Responses" in body
+    assert "YES (1 player):" in body
+
+
+@pytest.mark.unit
 def test_handler_unclear_leaves_roster_untouched_and_notifies_admin(mocker):
     """UNCLEAR: no roster write, player gets a clarification prompt, admin is
     notified with the sender's address and the verbatim message."""
@@ -1396,3 +1505,67 @@ def test_roster_summary_unnamed_player_shows_placeholder():
 
     assert "A player" in summary
     assert "bob@example.com" not in summary
+
+
+@pytest.mark.unit
+def test_player_query_reply_matches_by_email_and_substring_name():
+    """A player reference resolves by exact email, exact name, or a looser
+    substring on the name — reporting the right status word each time."""
+    from email_processor.handler import _format_player_query_reply
+
+    roster = {
+        "YES": {"players": {"konrad@x.com": {"name": "Konrad Marciniak"}}, "guests": []},
+        "NO": {"players": {"eamon@x.com": {"name": "Eamon Wong"}}, "guests": []},
+        "MAYBE": {"players": {"ivo@x.com": {"name": "Ivo Rakar"}}, "guests": []},
+    }
+
+    assert _format_player_query_reply(roster, "konrad@x.com", "2026-10-17") == (
+        "Konrad Marciniak is playing for 2026-10-17."
+    )
+    assert _format_player_query_reply(roster, "konrad", "2026-10-17") == (
+        "Konrad Marciniak is playing for 2026-10-17."
+    )
+    assert _format_player_query_reply(roster, "Eamon Wong", "2026-10-17") == (
+        "Eamon Wong is not playing for 2026-10-17."
+    )
+    assert _format_player_query_reply(roster, "Ivo", "2026-10-17") == (
+        "Ivo Rakar is a maybe for 2026-10-17."
+    )
+
+
+@pytest.mark.unit
+def test_player_query_reply_resolves_a_guest():
+    """A reference to a guest reports them as their sponsor's guest."""
+    from email_processor.handler import _format_player_query_reply
+
+    roster = {
+        "YES": {
+            "players": {"konrad@x.com": {"name": "Konrad Marciniak"}},
+            "guests": [{"name": "son", "sponsorEmail": "konrad@x.com", "sponsorName": "Konrad Marciniak"}],
+        },
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+
+    assert _format_player_query_reply(roster, "son", "2026-10-17") == (
+        "son is playing for 2026-10-17 (guest of Konrad Marciniak)."
+    )
+
+
+@pytest.mark.unit
+def test_player_query_reply_unmatched_falls_back_to_full_roster():
+    """An unmatched reference (including an empty target) falls back to listing
+    the full roster rather than leaving the asker with nothing."""
+    from email_processor.handler import _format_player_query_reply
+
+    roster = {
+        "YES": {"players": {"konrad@x.com": {"name": "Konrad Marciniak"}}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    }
+
+    for target in ("Nobody", None, ""):
+        reply = _format_player_query_reply(roster, target, "2026-10-17")
+        assert "couldn't find that player" in reply
+        assert "Current Responses" in reply
+        assert "Konrad Marciniak" in reply
