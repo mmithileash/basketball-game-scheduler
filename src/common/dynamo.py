@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 GAME_PREFIX = "GAME#"
 WEEK_PREFIX = "WEEK#"
 
+# RSVP statuses, in display order. Each is one `playerStatus#<status>` row per game.
+RSVP_STATUSES = ("YES", "NO", "MAYBE")
+
 
 def game_pk(game_date: str) -> str:
     """Build the Games-table partition value for a game row from a bare ISO date."""
@@ -76,26 +79,26 @@ def _get_client():
     return _client
 
 
+def _scan_all(table: Any, **scan_kwargs: Any) -> list[dict[str, Any]]:
+    """Run a Scan to completion, following LastEvaluatedKey pagination."""
+    response = table.scan(**scan_kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(**scan_kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
+
+
 def get_active_players() -> list[dict[str, Any]]:
     """Scan Players table for active players (SK='true')."""
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
-    response = table.scan(
+    items = _scan_all(
+        table,
         FilterExpression="active = :val",
         ExpressionAttributeValues={":val": "true"},
     )
-    items = response.get("Items", [])
-
-    # Handle pagination
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression="active = :val",
-            ExpressionAttributeValues={":val": "true"},
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
-
     logger.info("Found %d active players", len(items))
     return [{"email": item["email"], "name": item.get("name")} for item in items]
 
@@ -105,19 +108,11 @@ def get_active_admins() -> list[dict[str, Any]]:
     config = _get_config()
     table = _get_resource().Table(config.players_table)
 
-    response = table.scan(
+    items = _scan_all(
+        table,
         FilterExpression="active = :val AND isAdmin = :admin",
         ExpressionAttributeValues={":val": "true", ":admin": True},
     )
-    items = response.get("Items", [])
-
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression="active = :val AND isAdmin = :admin",
-            ExpressionAttributeValues={":val": "true", ":admin": True},
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
 
     logger.info(f"Found {len(items)} active admins")
     return [{"email": item["email"], "name": item.get("name")} for item in items]
@@ -176,44 +171,24 @@ def create_game(
 
     pk = game_pk(game_date)
     ts = {"createdAt": {"S": now}, "modifiedAt": {"S": now}}
+    status_puts = [
+        {
+            "Put": {
+                "TableName": config.games_table,
+                "Item": {
+                    "pk": {"S": pk},
+                    "sk": {"S": f"playerStatus#{status}"},
+                    "players": {"M": {}},
+                    "guests": {"L": []},
+                    **ts,
+                },
+            }
+        }
+        for status in RSVP_STATUSES
+    ]
     client.transact_write_items(TransactItems=[
         {"Put": {"TableName": config.games_table, "Item": game_status_item}},
-        {
-            "Put": {
-                "TableName": config.games_table,
-                "Item": {
-                    "pk": {"S": pk},
-                    "sk": {"S": "playerStatus#YES"},
-                    "players": {"M": {}},
-                    "guests": {"L": []},
-                    **ts,
-                },
-            }
-        },
-        {
-            "Put": {
-                "TableName": config.games_table,
-                "Item": {
-                    "pk": {"S": pk},
-                    "sk": {"S": "playerStatus#NO"},
-                    "players": {"M": {}},
-                    "guests": {"L": []},
-                    **ts,
-                },
-            }
-        },
-        {
-            "Put": {
-                "TableName": config.games_table,
-                "Item": {
-                    "pk": {"S": pk},
-                    "sk": {"S": "playerStatus#MAYBE"},
-                    "players": {"M": {}},
-                    "guests": {"L": []},
-                    **ts,
-                },
-            }
-        },
+        *status_puts,
     ])
     logger.info("Created game for %s", game_date)
 
@@ -276,9 +251,7 @@ def get_roster(game_date: str) -> dict[str, dict[str, Any]]:
     )
 
     roster: dict[str, dict[str, Any]] = {
-        "YES": {"players": {}, "guests": []},
-        "NO": {"players": {}, "guests": []},
-        "MAYBE": {"players": {}, "guests": []},
+        status: {"players": {}, "guests": []} for status in RSVP_STATUSES
     }
     for item in response.get("Items", []):
         status = item["sk"].split("#", 1)[1]
@@ -393,10 +366,16 @@ def freeze_game_schedule(game_date: str, start_time: str, duration_hours: int) -
     logger.info("Froze schedule for %s: %s, %dh", game_date, start_time, duration_hours)
 
 
-def get_pending_players(game_date: str) -> list[dict[str, Any]]:
-    """Get active players who haven't responded to the game."""
+def get_pending_players(
+    game_date: str, roster: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Get active players who haven't responded to the game.
+
+    Pass an already-fetched ``roster`` to skip re-reading it.
+    """
     active_players = get_active_players()
-    roster = get_roster(game_date)
+    if roster is None:
+        roster = get_roster(game_date)
 
     responded_emails: set[str] = set()
     for status_data in roster.values():
@@ -405,6 +384,26 @@ def get_pending_players(game_date: str) -> list[dict[str, Any]]:
     pending = [p for p in active_players if p["email"] not in responded_emails]
     logger.info("Found %d pending players for game %s", len(pending), game_date)
     return pending
+
+
+def count_confirmed(roster: dict[str, dict[str, Any]]) -> int:
+    """Confirmed turnout: YES players plus their guests."""
+    yes = roster.get("YES", {})
+    return len(yes.get("players", {})) + len(yes.get("guests", []))
+
+
+def guest_contact_emails(roster: dict[str, dict[str, Any]], statuses: list[str]) -> list[str]:
+    """Addresses of guests in ``statuses`` who registered their own email.
+
+    A guest with a contact email is stored as a Players-table row keyed by that
+    address with ``active="guest#active"``; guests without one can't be emailed.
+    """
+    return [
+        guest["pk"]
+        for status in statuses
+        for guest in roster.get(status, {}).get("guests", [])
+        if guest.get("sk") == "guest#active"
+    ]
 
 
 def get_player_name(email: str) -> str | None:
@@ -540,6 +539,8 @@ def remove_sponsor_guests_from_status(
     all_guests: list[dict[str, Any]] = list(item.get("guests", []))
 
     sponsor_guests = [g for g in all_guests if g.get("sponsorEmail") == sponsor_email]
+    if not sponsor_guests:
+        return []
     remaining = [g for g in all_guests if g.get("sponsorEmail") != sponsor_email]
 
     remaining_ddb = [_guest_to_ddb(g) for g in remaining]
@@ -677,23 +678,24 @@ def _to_ddb_attr(value: Any) -> dict[str, Any]:
         return {"S": str(value)}
 
 
-def deactivate_player(email: str) -> None:
-    """Move a player from active to inactive, preserving all attributes."""
+def _move_player(email: str, from_active: str, to_active: str) -> None:
+    """Move a Players row between active states ("true"/"false"), preserving all attributes."""
     email = normalize_email(email)
     config = _get_config()
     table = _get_resource().Table(config.players_table)
     client = _get_client()
 
-    response = table.get_item(Key={"email": email, "active": "true"})
+    response = table.get_item(Key={"email": email, "active": from_active})
     item = response.get("Item")
     if not item:
-        raise ValueError(f"No active player found for {email}")
+        state = "active" if from_active == "true" else "inactive"
+        raise ValueError(f"No {state} player found for {email}")
 
     now = _now()
-    inactive_item = {k: v for k, v in item.items()}
-    inactive_item["active"] = "false"
-    inactive_item.setdefault("createdAt", now)
-    inactive_item["modifiedAt"] = now
+    moved_item = dict(item)
+    moved_item["active"] = to_active
+    moved_item.setdefault("createdAt", now)
+    moved_item["modifiedAt"] = now
 
     client.transact_write_items(TransactItems=[
         {
@@ -701,55 +703,28 @@ def deactivate_player(email: str) -> None:
                 "TableName": config.players_table,
                 "Key": {
                     "email": {"S": email},
-                    "active": {"S": "true"},
+                    "active": {"S": from_active},
                 },
             }
         },
         {
             "Put": {
                 "TableName": config.players_table,
-                "Item": {k: _to_ddb_attr(v) for k, v in inactive_item.items()},
+                "Item": {k: _to_ddb_attr(v) for k, v in moved_item.items()},
             }
         },
     ])
+
+
+def deactivate_player(email: str) -> None:
+    """Move a player from active to inactive, preserving all attributes."""
+    _move_player(email, "true", "false")
     logger.info(f"Deactivated player {email}")
 
 
 def reactivate_player(email: str) -> None:
     """Move a player from inactive to active, preserving all attributes."""
-    email = normalize_email(email)
-    config = _get_config()
-    table = _get_resource().Table(config.players_table)
-    client = _get_client()
-
-    response = table.get_item(Key={"email": email, "active": "false"})
-    item = response.get("Item")
-    if not item:
-        raise ValueError(f"No inactive player found for {email}")
-
-    now = _now()
-    active_item = {k: v for k, v in item.items()}
-    active_item["active"] = "true"
-    active_item.setdefault("createdAt", now)
-    active_item["modifiedAt"] = now
-
-    client.transact_write_items(TransactItems=[
-        {
-            "Delete": {
-                "TableName": config.players_table,
-                "Key": {
-                    "email": {"S": email},
-                    "active": {"S": "false"},
-                },
-            }
-        },
-        {
-            "Put": {
-                "TableName": config.players_table,
-                "Item": {k: _to_ddb_attr(v) for k, v in active_item.items()},
-            }
-        },
-    ])
+    _move_player(email, "false", "true")
     logger.info(f"Reactivated player {email}")
 
 
@@ -875,20 +850,12 @@ def get_open_games() -> list[dict[str, Any]]:
     config = _get_config()
     table = _get_resource().Table(config.games_table)
 
-    response = table.scan(
+    items = _scan_all(
+        table,
         FilterExpression="sk = :sk AND #status = :open",
         ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues={":sk": "gameStatus", ":open": "OPEN"},
     )
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression="sk = :sk AND #status = :open",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={":sk": "gameStatus", ":open": "OPEN"},
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
     for item in items:
         item["gameDate"] = strip_pk(item.pop("pk"))
     logger.info(f"Found {len(items)} open game(s)")

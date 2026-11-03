@@ -169,6 +169,15 @@ def send_email(to: str, subject: str, body: str) -> None:
     logger.info(f"Sent email to {to}: {subject}")
 
 
+def _greeting(name: str | None) -> str:
+    return f"Hi {name}" if name else "Hi"
+
+
+def _send_player_email(to: str, subject: str, body: str) -> None:
+    """Send a player-facing email with the unsubscribe footer appended."""
+    send_email(to, subject, body + _unsubscribe_footer())
+
+
 def send_reminder(
     player_email: str,
     player_name: str | None,
@@ -177,7 +186,7 @@ def send_reminder(
     min_players: int,
 ) -> None:
     """Send reminder email with current confirmed count and the game's minimum."""
-    greeting = f"Hi {player_name}" if player_name else "Hi"
+    greeting = _greeting(player_name)
 
     subject = f"Reminder: Basketball Game - {game_date} [Game: {game_date}]"
     body = (
@@ -189,7 +198,7 @@ def send_reminder(
         f"  Just hit Reply with Yes / No / Maybe.\n"
     )
 
-    send_email(player_email, subject, body + _unsubscribe_footer())
+    _send_player_email(player_email, subject, body)
 
 
 def send_cancellation(player_email: str, game_date: str, min_players: int) -> None:
@@ -203,7 +212,7 @@ def send_cancellation(player_email: str, game_date: str, min_players: int) -> No
         f"See you next week!\n"
     )
 
-    send_email(player_email, subject, body + _unsubscribe_footer())
+    _send_player_email(player_email, subject, body)
 
 
 def send_guest_followup(
@@ -218,7 +227,7 @@ def send_guest_followup(
     The deadline references the game's actual (stored, floored) confirmation
     cutoff when known, rather than a hardcoded day.
     """
-    greeting = f"Hi {sponsor_name}" if sponsor_name else "Hi"
+    greeting = _greeting(sponsor_name)
     guest_list = ", ".join(guest_names)
 
     pretty_cutoff = _pretty_cutoff(cutoff)
@@ -241,26 +250,7 @@ def send_guest_followup(
         f"{deadline_line}"
     )
 
-    send_email(sponsor_email, subject, body + _unsubscribe_footer())
-
-
-def send_no_game_announcement(
-    player_email: str,
-    player_name: str | None,
-    game_date: str,
-) -> None:
-    """Notify a player that no game is scheduled this week (admin pre-cancelled)."""
-    greeting = f"Hi {player_name}" if player_name else "Hi"
-
-    subject = f"No Game This Week - {game_date}"
-    body = (
-        f"{greeting},\n\n"
-        f"There will be no basketball game this week ({game_date}). "
-        f"The game has been cancelled by the organiser.\n\n"
-        f"See you next week!\n"
-    )
-
-    send_email(player_email, subject, body + _unsubscribe_footer())
+    _send_player_email(sponsor_email, subject, body)
 
 
 def send_guest_cancelled_sponsor_notification(
@@ -270,7 +260,7 @@ def send_guest_cancelled_sponsor_notification(
     game_date: str,
 ) -> None:
     """Notify a sponsor that their guest has cancelled their attendance."""
-    greeting = f"Hi {sponsor_name}" if sponsor_name else "Hi"
+    greeting = _greeting(sponsor_name)
 
     subject = f"Your guest cancelled: Basketball Game - {game_date}"
     body = (
@@ -279,7 +269,7 @@ def send_guest_cancelled_sponsor_notification(
         f"If you'd like to bring another guest instead, just reply to the original announcement.\n"
     )
 
-    send_email(sponsor_email, subject, body + _unsubscribe_footer())
+    _send_player_email(sponsor_email, subject, body)
 
 
 def send_admin_unclear_notification(
@@ -335,7 +325,7 @@ def send_no_game_this_week(
     reason: str,
 ) -> None:
     """Notify a player that no games are scheduled for the given week."""
-    greeting = f"Hi {player_name}" if player_name else "Hi"
+    greeting = _greeting(player_name)
     subject = f"No Games This Week ({week_start_date})"
     if reason == "admin_declined":
         detail = "The organiser has confirmed there are no games scheduled this week."
@@ -346,7 +336,7 @@ def send_no_game_this_week(
         f"{detail}\n\n"
         f"See you next week!\n"
     )
-    send_email(player_email, subject, body + _unsubscribe_footer())
+    _send_player_email(player_email, subject, body)
 
 
 def _duration_label(hours: int) -> str:
@@ -468,7 +458,7 @@ def send_tentative_announcement(
     """
     from common.policy import is_fixed
 
-    greeting = f"Hi {player_name}" if player_name else "Hi"
+    greeting = _greeting(player_name)
     subject = f"Basketball Game - {game_date} [Game: {game_date}]"
 
     long_game = policy["longGame"]
@@ -519,7 +509,7 @@ def send_tentative_announcement(
         f"  Curious who's coming?\n"
         f"     Reply \"who's playing?\" to see the current roster.\n"
     )
-    send_email(player_email, subject, body + _unsubscribe_footer())
+    _send_player_email(player_email, subject, body)
 
 
 def send_final_confirmation_with_duration(
@@ -561,7 +551,7 @@ def send_final_confirmation_with_duration(
         f"Confirmed players:\n{roster_text}\n\n"
         f"See you there!\n"
     )
-    send_email(player_email, subject, body + _unsubscribe_footer())
+    _send_player_email(player_email, subject, body)
 
 
 def send_rate_limit_notice(player_email: str) -> None:
