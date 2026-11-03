@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+_QUERY_INTENTS = ("QUERY_ROSTER", "QUERY_PLAYER")
+
+
 def _find_player_status(sender_email: str, roster: dict[str, Any]) -> str | None:
     """Find the player's current status in the roster."""
     for status, data in roster.items():
@@ -90,36 +93,35 @@ def _status_line(intent: str, game_date: str) -> str | None:
     return None
 
 
-def _query_lead(intent: str) -> str | None:
-    """Deterministic lead for read-only roster queries.
-
-    The model's free-text reply_draft is untrustworthy for these: to sound
-    friendly it tends to state its own player totals (e.g. "9 players in Yes"),
-    which it counts by eye from the roster list and frequently gets wrong. We
-    drop that prose entirely and let the deterministic roster summary below
-    carry the authoritative counts. Returns None for non-query intents.
-    """
-    if intent in ("QUERY_ROSTER", "QUERY_PLAYER"):
-        return "Here's who's playing so far:"
-    return None
+def _count_phrase(n_players: int, n_guests: int) -> str:
+    """Human count like '5 players, 1 guest' — pluralised, guests omitted when none."""
+    phrase = f"{n_players} player" + ("" if n_players == 1 else "s")
+    if n_guests:
+        phrase += f", {n_guests} guest" + ("" if n_guests == 1 else "s")
+    return phrase
 
 
 def _format_roster_summary(roster: dict[str, Any]) -> str:
-    """Format current roster into a readable summary for reply emails."""
+    """Format the current roster into a readable summary for reply emails.
+
+    Each section is headed by its bare RSVP token (YES/NO/MAYBE), which the HTML
+    email layer colour-codes (green/red/amber) — giving the roster the same
+    scannable, colour-blocked look the model used to improvise, but with
+    authoritative counts instead of the model's eyeballed ones.
+    """
     sections = []
 
-    for status, label in [("YES", "Playing"), ("NO", "Not Playing"), ("MAYBE", "Maybe")]:
+    for status in ("YES", "NO", "MAYBE"):
         data = roster.get(status, {})
         players = data.get("players", {})
         guests = data.get("guests", [])
-        if players or guests:
-            lines = []
-            for pdata in players.values():
-                name = pdata.get("name") or "A player"
-                lines.append(f"  - {name}")
-            for guest in guests:
-                lines.append(f"  + Guest: {guest['name']} (via {guest['sponsorName']})")
-            sections.append(f"{label} ({len(players)} players, {len(guests)} guests):\n" + "\n".join(lines))
+        if not (players or guests):
+            continue
+        lines = [f"  - {pdata.get('name') or 'A player'}" for pdata in players.values()]
+        lines += [f"  + Guest: {g['name']} (via {g['sponsorName']})" for g in guests]
+        sections.append(
+            f"{status} ({_count_phrase(len(players), len(guests))}):\n" + "\n".join(lines)
+        )
 
     if not sections:
         return "\n\n---\nNo responses yet."
@@ -229,7 +231,7 @@ def _apply_player_intent(
             logger.warning(f"GUEST_CONFIRM from {sender_email} but no confirmed_guest_names in parsed result")
     elif intent == "GUEST_DECLINE":
         logger.info(f"GUEST_DECLINE from {sender_email} — guests remain in NO")
-    elif intent in ("QUERY_ROSTER", "QUERY_PLAYER"):
+    elif intent in _QUERY_INTENTS:
         pass
     else:
         logger.warning("Unknown intent: %s", intent)
@@ -254,13 +256,16 @@ def _handle_guest_email(
                 guest_obj["name"],
                 game_date,
             )
-    elif intent not in ("QUERY_ROSTER", "QUERY_PLAYER"):
+    elif intent not in _QUERY_INTENTS:
         reply_draft = (
             "As a guest you can only cancel your attendance or ask who's playing. "
             "Please contact the organiser for anything else."
         )
 
-    lead = _query_lead(intent) or reply_draft
+    # For a roster query the deterministic intent summary introduces the roster
+    # that follows; the model's free-text reply_draft (prone to miscounting) is
+    # dropped. Other intents keep their reply_draft lead.
+    lead = _format_intent_summary(intent, [], []) if intent in _QUERY_INTENTS else reply_draft
     updated_roster = get_roster(game_date)
     send_email(sender_email, "Re: " + subject, f"{lead}{_format_roster_summary(updated_roster)}")
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
@@ -302,8 +307,18 @@ def _handle_player_email(
 
     intent_summary = _format_intent_summary(intent, parsed.get("guests", []), parsed.get("confirmed_guest_names", []))
     updated_roster = get_roster(game_date)
-    lead = _status_line(intent, game_date) or _query_lead(intent) or reply_draft
-    full_reply = f"{lead}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
+    status_line = _status_line(intent, game_date)
+    if status_line:
+        lead = f"{status_line}\n\n{intent_summary}"
+    elif intent in _QUERY_INTENTS:
+        # Read-only query: the intent summary ("You asked about the current
+        # roster.") already introduces the roster below, so it stands alone as
+        # the lead. The model's free-text reply_draft is dropped — it tends to
+        # state its own miscounted totals.
+        lead = intent_summary
+    else:
+        lead = f"{reply_draft}\n\n{intent_summary}"
+    full_reply = f"{lead}{_format_roster_summary(updated_roster)}"
     send_email(sender_email, "Re: " + subject, full_reply)
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
 

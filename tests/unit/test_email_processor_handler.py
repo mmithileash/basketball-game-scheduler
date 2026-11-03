@@ -248,10 +248,10 @@ def test_handler_query_roster(mocker):
 
 @pytest.mark.unit
 def test_handler_query_roster_does_not_trust_model_count(mocker):
-    """A 'who's playing?' reply must lead with a deterministic sentence and must
-    NOT carry the model's free-text reply_draft, which tends to state its own
-    miscounted 'players in Yes' totals. The authoritative counts come only from
-    the deterministic roster summary below."""
+    """A 'who's playing?' reply must lead with the deterministic intent summary
+    and must NOT carry the model's free-text reply_draft, which tends to state
+    its own miscounted 'players in Yes' totals. The authoritative counts come
+    only from the deterministic roster summary below."""
     _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Who's playing?")
     mocker.patch("email_processor.handler.get_sender_role", return_value="player")
     mocker.patch(
@@ -283,8 +283,10 @@ def test_handler_query_roster_does_not_trust_model_count(mocker):
 
     body = mock_send.call_args[0][2]
     assert "9 players" not in body
-    assert body.startswith("Here's who's playing so far:")
-    assert "(2 players, 0 guests)" in body
+    assert body.startswith("You asked about the current roster.")
+    # Colour-coded RSVP heading with the authoritative count (no "guests" clause
+    # when there are none).
+    assert "YES (2 players):" in body
 
 
 @pytest.mark.unit
@@ -312,7 +314,8 @@ def test_handler_guest_query_roster_does_not_trust_model_count(mocker):
 
     body = mock_send.call_args[0][2]
     assert "7 players" not in body
-    assert body.startswith("Here's who's playing so far:")
+    assert body.startswith("You asked about the current roster.")
+    assert "YES (1 player):" in body
 
 
 @pytest.mark.unit
