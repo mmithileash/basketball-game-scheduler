@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+_QUERY_INTENTS = ("QUERY_ROSTER", "QUERY_PLAYER")
+
+
 def _find_player_status(sender_email: str, roster: dict[str, Any]) -> str | None:
     """Find the player's current status in the roster."""
     for status, data in roster.items():
@@ -90,27 +93,136 @@ def _status_line(intent: str, game_date: str) -> str | None:
     return None
 
 
+def _count_phrase(n_players: int, n_guests: int) -> str:
+    """Human count like '5 players, 1 guest' — pluralised, guests omitted when none."""
+    phrase = f"{n_players} player" + ("" if n_players == 1 else "s")
+    if n_guests:
+        phrase += f", {n_guests} guest" + ("" if n_guests == 1 else "s")
+    return phrase
+
+
 def _format_roster_summary(roster: dict[str, Any]) -> str:
-    """Format current roster into a readable summary for reply emails."""
+    """Format the current roster into a readable summary for reply emails.
+
+    Each section is headed by its bare RSVP token (YES/NO/MAYBE), which the HTML
+    email layer colour-codes (green/red/amber) — giving the roster the same
+    scannable, colour-blocked look the model used to improvise, but with
+    authoritative counts instead of the model's eyeballed ones.
+    """
     sections = []
 
-    for status, label in [("YES", "Playing"), ("NO", "Not Playing"), ("MAYBE", "Maybe")]:
+    for status in ("YES", "NO", "MAYBE"):
         data = roster.get(status, {})
         players = data.get("players", {})
         guests = data.get("guests", [])
-        if players or guests:
-            lines = []
-            for pdata in players.values():
-                name = pdata.get("name") or "A player"
-                lines.append(f"  - {name}")
-            for guest in guests:
-                lines.append(f"  + Guest: {guest['name']} (via {guest['sponsorName']})")
-            sections.append(f"{label} ({len(players)} players, {len(guests)} guests):\n" + "\n".join(lines))
+        if not (players or guests):
+            continue
+        lines = [f"  - {pdata.get('name') or 'A player'}" for pdata in players.values()]
+        lines += [f"  + Guest: {g['name']} (via {g['sponsorName']})" for g in guests]
+        sections.append(
+            f"{status} ({_count_phrase(len(players), len(guests))}):\n" + "\n".join(lines)
+        )
 
     if not sections:
         return "\n\n---\nNo responses yet."
 
     return "\n\n---\nCurrent Responses:\n\n" + "\n\n".join(sections)
+
+
+_PLAYER_STATUS_WORD = {"YES": "playing", "NO": "not playing", "MAYBE": "a maybe"}
+
+
+def _resolve_query_target(
+    roster: dict[str, Any], query_target: str | None
+) -> tuple[str, str, str, str] | None:
+    """Resolve a free-text player/guest reference to a single roster entry.
+
+    `query_target` is the model's best guess at who the asker meant — an email
+    or a name. Returns a ``(kind, status, name, extra)`` tuple where ``kind`` is
+    ``"player"`` (``extra`` is the email) or ``"guest"`` (``extra`` is the
+    sponsor's name), or ``None`` if nothing on the roster matches.
+    """
+    if not query_target:
+        return None
+    target = query_target.strip().lower()
+    statuses = ("YES", "NO", "MAYBE")
+
+    # Exact email or full-name match on a responding player.
+    for status in statuses:
+        for email, pdata in roster.get(status, {}).get("players", {}).items():
+            name = pdata.get("name") or ""
+            if target == email.lower() or (name and target == name.lower()):
+                return ("player", status, name or email, email)
+    # Exact name match on a guest.
+    for status in statuses:
+        for g in roster.get(status, {}).get("guests", []):
+            if target == g.get("name", "").lower():
+                return ("guest", status, g["name"], g.get("sponsorName", ""))
+    # Looser substring match on a player name (e.g. "konrad" -> "Konrad Marciniak").
+    for status in statuses:
+        for email, pdata in roster.get(status, {}).get("players", {}).items():
+            name = pdata.get("name") or ""
+            if name and target in name.lower():
+                return ("player", status, name, email)
+    return None
+
+
+def _format_player_query_reply(
+    roster: dict[str, Any], query_target: str | None, game_date: str
+) -> str:
+    """Answer a question about one specific player — not the whole roster.
+
+    Names just the person asked about and their status. If the reference can't
+    be matched (unknown name, or they simply haven't replied yet), fall back to
+    the full roster so the asker still gets a useful answer.
+    """
+    match = _resolve_query_target(roster, query_target)
+    if match is None:
+        return (
+            "We couldn't find that player among the current responses — "
+            "they may not have replied yet. Here's everyone so far:"
+            f"{_format_roster_summary(roster)}"
+        )
+
+    kind, status, name, extra = match
+    word = _PLAYER_STATUS_WORD[status]
+    if kind == "guest":
+        return f"{name} is {word} for {game_date} (guest of {extra})."
+
+    guests = [
+        g
+        for g in roster.get(status, {}).get("guests", [])
+        if g.get("sponsorEmail", "").lower() == (extra or "").lower()
+        or g.get("sponsorName", "").lower() == name.lower()
+    ]
+    reply = f"{name} is {word} for {game_date}."
+    if guests:
+        n = len(guests)
+        reply += f" They're bringing {n} guest" + ("" if n == 1 else "s") + "."
+    return reply
+
+
+def _format_query_reply(
+    intent: str, roster: dict[str, Any], query_target: str | None, game_date: str
+) -> str:
+    """Build the reply body for a read-only query intent.
+
+    Shared by the player and guest handlers: a QUERY_PLAYER answers just the
+    person asked about, while a QUERY_ROSTER leads with the deterministic intent
+    summary and lists everyone. Either way the model's free-text reply_draft is
+    dropped — it tends to state its own miscounted totals.
+    """
+    if intent == "QUERY_PLAYER":
+        return _format_player_query_reply(roster, query_target, game_date)
+    return f"{_format_intent_summary(intent, [])}{_format_roster_summary(roster)}"
+
+
+def _send_reply(
+    sender_email: str, subject: str, full_reply: str, intent: str, game_date: str
+) -> dict[str, Any]:
+    """Send a reply and return the handler's standard success response."""
+    send_email(sender_email, "Re: " + subject, full_reply)
+    return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
 
 
 def _handle_unsubscribe(sender_email: str) -> dict[str, Any]:
@@ -215,7 +327,7 @@ def _apply_player_intent(
             logger.warning(f"GUEST_CONFIRM from {sender_email} but no confirmed_guest_names in parsed result")
     elif intent == "GUEST_DECLINE":
         logger.info(f"GUEST_DECLINE from {sender_email} — guests remain in NO")
-    elif intent in ("QUERY_ROSTER", "QUERY_PLAYER"):
+    elif intent in _QUERY_INTENTS:
         pass
     else:
         logger.warning("Unknown intent: %s", intent)
@@ -240,15 +352,18 @@ def _handle_guest_email(
                 guest_obj["name"],
                 game_date,
             )
-    elif intent not in ("QUERY_ROSTER", "QUERY_PLAYER"):
+    elif intent not in _QUERY_INTENTS:
         reply_draft = (
             "As a guest you can only cancel your attendance or ask who's playing. "
             "Please contact the organiser for anything else."
         )
 
     updated_roster = get_roster(game_date)
-    send_email(sender_email, "Re: " + subject, f"{reply_draft}{_format_roster_summary(updated_roster)}")
-    return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
+    if intent in _QUERY_INTENTS:
+        full_reply = _format_query_reply(intent, updated_roster, parsed.get("query_target"), game_date)
+    else:
+        full_reply = f"{reply_draft}{_format_roster_summary(updated_roster)}"
+    return _send_reply(sender_email, subject, full_reply, intent, game_date)
 
 
 def _handle_unclear_player_email(
@@ -288,10 +403,13 @@ def _handle_player_email(
     intent_summary = _format_intent_summary(intent, parsed.get("guests", []), parsed.get("confirmed_guest_names", []))
     updated_roster = get_roster(game_date)
     status_line = _status_line(intent, game_date)
-    lead = status_line if status_line else reply_draft
-    full_reply = f"{lead}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
-    send_email(sender_email, "Re: " + subject, full_reply)
-    return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
+    if intent in _QUERY_INTENTS:
+        full_reply = _format_query_reply(intent, updated_roster, parsed.get("query_target"), game_date)
+    elif status_line:
+        full_reply = f"{status_line}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
+    else:
+        full_reply = f"{reply_draft}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
+    return _send_reply(sender_email, subject, full_reply, intent, game_date)
 
 
 def _resolve_game_date(subject: str, sender_email: str, body: str) -> str | None:
