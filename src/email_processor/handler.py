@@ -202,6 +202,29 @@ def _format_player_query_reply(
     return reply
 
 
+def _format_query_reply(
+    intent: str, roster: dict[str, Any], query_target: str | None, game_date: str
+) -> str:
+    """Build the reply body for a read-only query intent.
+
+    Shared by the player and guest handlers: a QUERY_PLAYER answers just the
+    person asked about, while a QUERY_ROSTER leads with the deterministic intent
+    summary and lists everyone. Either way the model's free-text reply_draft is
+    dropped — it tends to state its own miscounted totals.
+    """
+    if intent == "QUERY_PLAYER":
+        return _format_player_query_reply(roster, query_target, game_date)
+    return f"{_format_intent_summary(intent, [])}{_format_roster_summary(roster)}"
+
+
+def _send_reply(
+    sender_email: str, subject: str, full_reply: str, intent: str, game_date: str
+) -> dict[str, Any]:
+    """Send a reply and return the handler's standard success response."""
+    send_email(sender_email, "Re: " + subject, full_reply)
+    return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
+
+
 def _handle_unsubscribe(sender_email: str) -> dict[str, Any]:
     """Process a player self-unsubscribe request."""
     role = get_sender_role(sender_email)
@@ -336,17 +359,11 @@ def _handle_guest_email(
         )
 
     updated_roster = get_roster(game_date)
-    if intent == "QUERY_PLAYER":
-        # A question about one person answers just that person — not the roster.
-        full_reply = _format_player_query_reply(updated_roster, parsed.get("query_target"), game_date)
-    elif intent == "QUERY_ROSTER":
-        # The deterministic intent summary introduces the roster that follows;
-        # the model's free-text reply_draft (prone to miscounting) is dropped.
-        full_reply = f"{_format_intent_summary(intent, [], [])}{_format_roster_summary(updated_roster)}"
+    if intent in _QUERY_INTENTS:
+        full_reply = _format_query_reply(intent, updated_roster, parsed.get("query_target"), game_date)
     else:
         full_reply = f"{reply_draft}{_format_roster_summary(updated_roster)}"
-    send_email(sender_email, "Re: " + subject, full_reply)
-    return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
+    return _send_reply(sender_email, subject, full_reply, intent, game_date)
 
 
 def _handle_unclear_player_email(
@@ -386,22 +403,13 @@ def _handle_player_email(
     intent_summary = _format_intent_summary(intent, parsed.get("guests", []), parsed.get("confirmed_guest_names", []))
     updated_roster = get_roster(game_date)
     status_line = _status_line(intent, game_date)
-    if intent == "QUERY_PLAYER":
-        # A question about one person answers just that person — not the whole
-        # roster. The model's free-text reply_draft is dropped.
-        full_reply = _format_player_query_reply(updated_roster, parsed.get("query_target"), game_date)
+    if intent in _QUERY_INTENTS:
+        full_reply = _format_query_reply(intent, updated_roster, parsed.get("query_target"), game_date)
     elif status_line:
         full_reply = f"{status_line}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
-    elif intent == "QUERY_ROSTER":
-        # The intent summary ("You asked about the current roster.") already
-        # introduces the roster below, so it stands alone as the lead. The
-        # model's free-text reply_draft is dropped — it tends to state its own
-        # miscounted totals.
-        full_reply = f"{intent_summary}{_format_roster_summary(updated_roster)}"
     else:
         full_reply = f"{reply_draft}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
-    send_email(sender_email, "Re: " + subject, full_reply)
-    return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
+    return _send_reply(sender_email, subject, full_reply, intent, game_date)
 
 
 def _resolve_game_date(subject: str, sender_email: str, body: str) -> str | None:
