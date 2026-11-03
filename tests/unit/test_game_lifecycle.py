@@ -385,6 +385,31 @@ def test_confirm_or_cancel_passes_hourly_rate_and_count_to_confirmation(mocker):
 
 
 @pytest.mark.unit
+def test_confirm_or_cancel_guest_confirmation_gets_rate_and_count(mocker):
+    """A guest with their own email gets the same rate and confirmed count as players."""
+    roster = _roster_with_yes(8)
+    roster["YES"]["guests"] = [{
+        "pk": "guest@e.com", "sk": "guest#active", "name": "Gus",
+        "sponsorEmail": "p0@e.com", "sponsorName": "P0",
+    }]
+    mocker.patch(
+        "game_lifecycle.confirm_or_cancel_task.get_game_status",
+        return_value={"status": "OPEN", "policy": _TIERED_POLICY, "hourlyRate": 45},
+    )
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.get_roster", return_value=roster)
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.get_pending_players", return_value=[])
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.update_game_status")
+    mocker.patch("game_lifecycle.confirm_or_cancel_task.freeze_game_schedule")
+    mock_confirm = mocker.patch("game_lifecycle.confirm_or_cancel_task.send_final_confirmation_with_duration")
+
+    confirm_or_cancel_handler({"game_date": "2026-07-07"}, None)
+
+    guest_call = next(c for c in mock_confirm.call_args_list if c.args[0] == "guest@e.com")
+    assert guest_call.kwargs["hourly_rate"] == 45
+    assert guest_call.kwargs["confirmed_count"] == 9
+
+
+@pytest.mark.unit
 def test_confirm_or_cancel_freezes_long_tier_at_or_above_threshold(mocker):
     """10+ confirmed → long tier (10:00 AM, 2 hours), frozen onto the record."""
     mocker.patch(

@@ -88,7 +88,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     for guest_email in _guest_contact_emails(roster, ["YES"]):
         try:
             send_final_confirmation_with_duration(
-                guest_email, game_date, roster, start_time, duration_hours, location=location
+                guest_email, game_date, roster, start_time, duration_hours,
+                location=location, hourly_rate=hourly_rate, confirmed_count=confirmed_count,
             )
         except Exception:
             logger.error(f"Failed to send confirmation to guest {guest_email}", exc_info=True)
