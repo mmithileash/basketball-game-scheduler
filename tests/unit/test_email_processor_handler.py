@@ -247,6 +247,75 @@ def test_handler_query_roster(mocker):
 
 
 @pytest.mark.unit
+def test_handler_query_roster_does_not_trust_model_count(mocker):
+    """A 'who's playing?' reply must lead with a deterministic sentence and must
+    NOT carry the model's free-text reply_draft, which tends to state its own
+    miscounted 'players in Yes' totals. The authoritative counts come only from
+    the deterministic roster summary below."""
+    _patch_s3(mocker, "alice@example.com", "Re: Basketball Game", "Who's playing?")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="player")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-03-28", "status": "OPEN"}],
+    )
+    mocker.patch(
+        "email_processor.handler.get_roster",
+        return_value={
+            "YES": {"players": {"a@x.com": {"name": "Alice"}, "b@x.com": {"name": "Bob"}}, "guests": []},
+            "NO": {"players": {}, "guests": []},
+            "MAYBE": {"players": {}, "guests": []},
+        },
+    )
+    mocker.patch(
+        "email_processor.handler.parse_player_email",
+        return_value={
+            "intent": "QUERY_ROSTER",
+            "guests": [],
+            "confirmed_guest_names": [],
+            "query_target": None,
+            "reply_draft": "We have 9 players confirmed for Yes!",  # wrong count, must not appear
+        },
+    )
+    mocker.patch("email_processor.handler.update_player_response")
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    body = mock_send.call_args[0][2]
+    assert "9 players" not in body
+    assert body.startswith("Here's who's playing so far:")
+    assert "(2 players, 0 guests)" in body
+
+
+@pytest.mark.unit
+def test_handler_guest_query_roster_does_not_trust_model_count(mocker):
+    """A guest 'who's playing?' reply likewise leads deterministically and drops
+    the model's free-text reply_draft."""
+    _patch_s3(mocker, "john@example.com", "Re: Basketball Game", "Who's playing?")
+    mocker.patch("email_processor.handler.get_sender_role", return_value="guest")
+    mocker.patch(
+        "email_processor.handler.get_open_games",
+        return_value=[{"gameDate": "2026-04-19", "status": "OPEN"}],
+    )
+    mocker.patch("email_processor.handler.get_roster", return_value={
+        "YES": {"players": {"a@x.com": {"name": "Alice"}}, "guests": []},
+        "NO": {"players": {}, "guests": []},
+        "MAYBE": {"players": {}, "guests": []},
+    })
+    mocker.patch("email_processor.handler.parse_player_email", return_value={
+        "intent": "QUERY_ROSTER", "reply_draft": "There are 7 players in Yes!",
+        "guests": [], "confirmed_guest_names": [], "query_target": None,
+    })
+    mock_send = mocker.patch("email_processor.handler.send_email")
+
+    handler(_make_s3_event(), None)
+
+    body = mock_send.call_args[0][2]
+    assert "7 players" not in body
+    assert body.startswith("Here's who's playing so far:")
+
+
+@pytest.mark.unit
 def test_handler_unclear_leaves_roster_untouched_and_notifies_admin(mocker):
     """UNCLEAR: no roster write, player gets a clarification prompt, admin is
     notified with the sender's address and the verbatim message."""

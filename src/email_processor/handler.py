@@ -90,6 +90,20 @@ def _status_line(intent: str, game_date: str) -> str | None:
     return None
 
 
+def _query_lead(intent: str) -> str | None:
+    """Deterministic lead for read-only roster queries.
+
+    The model's free-text reply_draft is untrustworthy for these: to sound
+    friendly it tends to state its own player totals (e.g. "9 players in Yes"),
+    which it counts by eye from the roster list and frequently gets wrong. We
+    drop that prose entirely and let the deterministic roster summary below
+    carry the authoritative counts. Returns None for non-query intents.
+    """
+    if intent in ("QUERY_ROSTER", "QUERY_PLAYER"):
+        return "Here's who's playing so far:"
+    return None
+
+
 def _format_roster_summary(roster: dict[str, Any]) -> str:
     """Format current roster into a readable summary for reply emails."""
     sections = []
@@ -246,8 +260,9 @@ def _handle_guest_email(
             "Please contact the organiser for anything else."
         )
 
+    lead = _query_lead(intent) or reply_draft
     updated_roster = get_roster(game_date)
-    send_email(sender_email, "Re: " + subject, f"{reply_draft}{_format_roster_summary(updated_roster)}")
+    send_email(sender_email, "Re: " + subject, f"{lead}{_format_roster_summary(updated_roster)}")
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
 
 
@@ -287,8 +302,7 @@ def _handle_player_email(
 
     intent_summary = _format_intent_summary(intent, parsed.get("guests", []), parsed.get("confirmed_guest_names", []))
     updated_roster = get_roster(game_date)
-    status_line = _status_line(intent, game_date)
-    lead = status_line if status_line else reply_draft
+    lead = _status_line(intent, game_date) or _query_lead(intent) or reply_draft
     full_reply = f"{lead}\n\n{intent_summary}{_format_roster_summary(updated_roster)}"
     send_email(sender_email, "Re: " + subject, full_reply)
     return {"statusCode": 200, "body": {"sender": sender_email, "intent": intent, "gameDate": game_date}}
